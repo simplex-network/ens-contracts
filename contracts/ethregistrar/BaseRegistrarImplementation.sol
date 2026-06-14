@@ -118,23 +118,10 @@ contract BaseRegistrarImplementation is
         return expiries[id] + GRACE_PERIOD < block.timestamp;
     }
 
-    /// @dev Register a name.
-    /// @param id The token ID (keccak256 of the label).
-    /// @param owner The address that should own the registration.
-    /// @param duration Duration in seconds for the registration.
-    function register(
-        uint256 id,
-        address owner,
-        uint256 duration
-    ) external override returns (uint256) {
-        return _register(id, owner, duration, true);
-    }
-
     /// @dev Register a name from its plaintext label, recording the label
     ///      on-chain (write-once) so hash->name resolves without an indexer.
-    ///      This is the SNRC registration path; the low-level register(uint256)
-    ///      above does NOT record a label and exists only for the upstream
-    ///      IBaseRegistrar interface (eg NameWrapper).
+    ///      This is the only registration path: there is no raw-labelhash
+    ///      register, so every registration records its label.
     /// @param label The plaintext label (eg "alice").
     /// @param owner The address that should own the registration.
     /// @param duration Duration in seconds for the registration.
@@ -149,26 +136,13 @@ contract BaseRegistrarImplementation is
         if (bytes(labelOf[id]).length == 0) {
             labelOf[id] = label;
         }
-        return _register(id, owner, duration, true);
-    }
-
-    /// @dev Register a name, without modifying the registry.
-    /// @param id The token ID (keccak256 of the label).
-    /// @param owner The address that should own the registration.
-    /// @param duration Duration in seconds for the registration.
-    function registerOnly(
-        uint256 id,
-        address owner,
-        uint256 duration
-    ) external returns (uint256) {
-        return _register(id, owner, duration, false);
+        return _register(id, owner, duration);
     }
 
     function _register(
         uint256 id,
         address owner,
-        uint256 duration,
-        bool updateRegistry
+        uint256 duration
     ) internal live onlyController returns (uint256) {
         require(available(id));
         require(
@@ -182,9 +156,7 @@ contract BaseRegistrarImplementation is
             _burn(id);
         }
         _mint(owner, id);
-        if (updateRegistry) {
-            ens.setSubnodeOwner(baseNode, bytes32(id), owner);
-        }
+        ens.setSubnodeOwner(baseNode, bytes32(id), owner);
 
         emit NameRegistered(id, owner, block.timestamp + duration);
 

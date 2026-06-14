@@ -71,16 +71,6 @@ describe('BaseRegistrarImplementation v3', () => {
       )
     })
 
-    it('register(uint256) leaves labelOf empty (upstream path)', async () => {
-      const { baseRegistrar } = await loadFixture()
-      const id = BigInt(labelhash('bob'))
-      await baseRegistrar.write.register([
-        id,
-        registrantAccount.address,
-        DURATION,
-      ])
-      expect(await baseRegistrar.read.labelOf([id])).toBe('')
-    })
   })
 
   describe('ERC721Enumerable', () => {
