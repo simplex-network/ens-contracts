@@ -19,5 +19,4 @@ What replaced the wrapper in v3:
 - **NFT metadata** is rendered fully on-chain by `simplex/MetadataRenderer.sol`.
 - **Subnames** are created + indexed by `simplex/SubnameRegistrar.sol`.
 
-See `docs/architecture.md` and the `docs/uml-class-diagram.excalidraw` /
-`docs/uml-deployment-diagram.excalidraw` diagrams.
+See `docs/architecture.md` and the `docs/uml-class-diagram.excalidraw`  diagram.
