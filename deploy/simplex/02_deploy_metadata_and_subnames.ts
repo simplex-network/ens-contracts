@@ -37,6 +37,15 @@ export default deployScript(
       args: [renderer.address],
       account: owner,
     })
+
+    // Cap label length at the DNS octet limit (63 bytes). Bounds labelOf storage
+    // and on-chain SVG/JSON render size. (security.md L4)
+    console.log(`  - Setting BaseRegistrar.maxLabelLength = 63`)
+    await write(registrar, {
+      functionName: 'setMaxLabelLength',
+      args: [63n],
+      account: owner,
+    })
   },
   {
     id: 'SimplexMetadataAndSubnames v1.0.0',
