@@ -14,11 +14,13 @@ import {IMetadataRenderer} from "../ethregistrar/IMetadataRenderer.sol";
 ///         (`scripts/nft-preview/gen.mjs`); keep the two in sync.
 ///
 ///         Layout heuristic (char-count based, so it works on-chain without
-///         glyph metrics): the name (label + suffix) is laid out on 1-3 lines,
-///         font size = floor(450 / (charsPerLine * 1.05)) capped per line count,
-///         where 1.05 is the worst-case bold glyph advance ('m'); this keeps a
-///         ~5% side margin even for an all-'m' 63-char label, and guarantees the
-///         full name is shown. Wrapping is balanced and UTF-8-codepoint-safe.
+///         glyph metrics): a label up to 8 chars renders on one line filling the
+///         width; a longer label keeps that same 8-char single-line font and
+///         WRAPS instead of shrinking (label balanced across up to 4 lines, the
+///         suffix on its own final line so the dot leads it, up to 5 lines), so
+///         a longer name is never bigger than a shorter one. 1.05 is the
+///         worst-case bold glyph advance ('m'), keeping a ~5% side margin even
+///         for an all-'m' label. Wrapping is balanced and UTF-8-codepoint-safe.
 contract MetadataRenderer is IMetadataRenderer {
     using Strings for uint256;
 
@@ -32,7 +34,7 @@ contract MetadataRenderer is IMetadataRenderer {
     string private constant P2 =
         "M14.0923 25.5156L16.944 22.6642L16.9429 22.6634L22.6467 16.9612L17.0513 11.3675L17.0523 11.367L14.2548 8.56979L8.65972 2.97535L11.5114 0.123963L17.1061 5.71849L22.8099 0.015625L25.6074 2.81285L19.9035 8.51562L25.4984 14.1099L31.2025 8.40729L34 11.2045L28.2958 16.907L33.8917 22.5017L31.0399 25.3531L25.4442 19.7584L19.7409 25.4611L25.3365 31.0559L22.4848 33.9073L16.8892 28.3124L11.1864 34.0156L8.38885 31.2184L14.0923 25.5156Z";
     string private constant DESC =
-        "A SimpleX name. Resolves to SimpleX contact and channel links.";
+        "Unique SimpleX namespace for contact and channel links";
 
     constructor(string memory _suffix) {
         suffix = _suffix;
@@ -44,7 +46,7 @@ contract MetadataRenderer is IMetadataRenderer {
         string calldata label
     ) external view returns (string memory) {
         string memory name = string.concat(label, suffix);
-        string memory svg = _svg(name);
+        string memory svg = _svg(label, suffix);
         string memory json = string.concat(
             '{"name":"',
             _jsonEscape(name),
@@ -61,8 +63,14 @@ contract MetadataRenderer is IMetadataRenderer {
             );
     }
 
-    function _svg(string memory name) internal pure returns (string memory) {
-        (uint256 size, uint256 lines) = _layout(bytes(name).length);
+    function _svg(
+        string memory label,
+        string memory suffix_
+    ) internal pure returns (string memory) {
+        (uint256 size, uint256 lines) = _layout(
+            bytes(label).length,
+            bytes(suffix_).length
+        );
         string memory defs = string.concat(
             "<defs>",
             // background: CSS linear-gradient(30deg) black (bottom-left) -> warm
@@ -71,8 +79,9 @@ contract MetadataRenderer is IMetadataRenderer {
             '<linearGradient id="g" x1="79.25" y1="545.75" x2="420.75" y2="-45.75" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#000000"/><stop offset="52%" stop-color="#131D49"/><stop offset="65%" stop-color="#3F5598"/><stop offset="85%" stop-color="#C3FAFF"/><stop offset="90%" stop-color="#FFF6E0"/></linearGradient>',
             // brand logo gradient (P2): cyan -> blue, official userSpaceOnUse coords
             '<linearGradient id="lg" x1="12.8381" y1="-0.678252" x2="9.54355" y2="31.4493" gradientUnits="userSpaceOnUse"><stop stop-color="#01F1FF"/><stop offset="1" stop-color="#0197FF"/></linearGradient>',
-            // name gradient: linear-gradient(90deg, #019bfe, #64fdff)
-            '<linearGradient id="tg" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#019bfe"/><stop offset="100%" stop-color="#64fdff"/></linearGradient>',
+            // name gradient: linear-gradient(90deg, #33CCFF, #64fdff)
+            // (start = half-way colour of the old #019bfe->#64fdff ramp, for contrast)
+            '<linearGradient id="tg" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#33CCFF"/><stop offset="100%" stop-color="#64fdff"/></linearGradient>',
             "</defs>"
         );
         string memory logo = string.concat(
@@ -91,64 +100,116 @@ contract MetadataRenderer is IMetadataRenderer {
                 '<text font-family="sans-serif" font-size="',
                 size.toString(),
                 '" font-weight="bold" fill="url(#tg)" text-anchor="middle">',
-                _tspans(bytes(name), size, lines),
+                _tspans(bytes(label), bytes(suffix_), size, lines),
                 "</text></svg>"
             );
     }
 
-    /// @dev Choose the fewest lines (1-3) whose font size clears a per-line-count
-    ///      floor; size = floor(450 / (charsPerLine * 1.05)), capped per line count.
+    /// @dev A label up to 8 chars renders on one line filling the width; a longer
+    ///      label keeps that 8-char single-line "anchor" font and wraps (label
+    ///      balanced across up to 4 lines, suffix on its own final line). size =
+    ///      floor(450 / (charsPerLine * 1.05)), with 1.05 encoded as *100 / *105.
+    ///      MIN font 14, MAXSIZE 48. Lengths are in bytes (safe over-estimate for
+    ///      multibyte labels).
     function _layout(
-        uint256 len
+        uint256 labelLen,
+        uint256 suffixLen
     ) internal pure returns (uint256 size, uint256 lines) {
-        uint256[3] memory maxF = [uint256(44), 30, 24];
-        uint256[3] memory floorF = [uint256(22), 16, 14];
-        for (uint256 l = 1; l <= 3; l++) {
-            uint256 perLine = (len + l - 1) / l; // ceil
-            uint256 s = perLine == 0 ? maxF[l - 1] : (450 * 100) / (perLine * 105);
-            if (s > maxF[l - 1]) s = maxF[l - 1];
-            if (s >= floorF[l - 1] || l == 3) {
-                if (s < 14) s = 14; // MIN
-                return (s, l);
-            }
+        if (labelLen <= 8) {
+            size = (450 * 100) / ((labelLen + suffixLen) * 105);
+            if (size > 48) size = 48; // MAXSIZE
+            if (size < 14) size = 14; // MIN
+            return (size, 1);
         }
+        size = (450 * 100) / ((8 + suffixLen) * 105); // 8-char single-line anchor
+        uint256 perLine = (450 * 100) / (size * 105); // chars per line at the anchor
+        uint256 labelLines = (labelLen + perLine - 1) / perLine; // ceil
+        if (labelLines > 4) {
+            labelLines = 4;
+            perLine = (labelLen + 3) / 4; // ceil(labelLen / 4)
+            size = (450 * 100) / (perLine * 105);
+        }
+        if (size < 14) size = 14; // MIN
+        return (size, labelLines + 1);
     }
 
-    /// @dev Lay the name out as balanced, UTF-8-safe `<tspan>` lines, vertically
-    ///      centred. Each line's text is XML-escaped.
+    /// @dev Dot-aware, UTF-8-safe `<tspan>` lines, vertically centred. One line ->
+    ///      the whole name; otherwise the label is balanced across (lines-1) lines
+    ///      and the suffix is the final line (so the dot leads it). Each line's
+    ///      text is XML-escaped.
     function _tspans(
-        bytes memory nb,
+        bytes memory lb,
+        bytes memory sb,
         uint256 size,
         uint256 lines
-    ) internal pure returns (string memory out) {
-        uint256 lineH = (size * 120 + 50) / 100; // round(size * 1.2)
-        uint256 blockH = lines * lineH;
-        // round(252 - blockH/2 + 0.74*size)
-        int256 fb = (int256(252) *
-            100 -
-            int256(blockH) *
-            50 +
-            int256(size) *
-            74 +
-            50) / 100;
-        uint256 per = (nb.length + lines - 1) / lines; // ceil bytes per line
+    ) internal pure returns (string memory) {
+        int256 fb = _firstBaseline(size, lines);
+        if (lines == 1) {
+            return _lineTspan(fb, size, 0, _xmlEscape(string(bytes.concat(lb, sb))));
+        }
+        // label balanced across (lines-1) lines, then the suffix on the last line
+        return
+            string.concat(
+                _labelLines(lb, size, fb, lines),
+                _lineTspan(fb, size, lines - 1, _xmlEscape(string(sb)))
+            );
+    }
+
+    /// @dev The label's `<tspan>` lines (all but the final suffix line),
+    ///      balanced and UTF-8-safe. Split out to keep `_tspans` off the stack.
+    function _labelLines(
+        bytes memory lb,
+        uint256 size,
+        int256 fb,
+        uint256 lines
+    ) private pure returns (string memory out) {
+        // ceil(lb.length / (lines - 1)) balanced bytes per label line
+        uint256 per = (lb.length + lines - 2) / (lines - 1);
         uint256 pos;
-        for (uint256 i = 0; i < lines && pos < nb.length; i++) {
+        for (uint256 i = 0; i + 1 < lines; i++) {
             uint256 end = pos + per;
-            if (end > nb.length) end = nb.length;
+            if (end > lb.length) end = lb.length;
             // don't split a multibyte UTF-8 sequence (continuation byte 10xxxxxx)
-            while (end < nb.length && (uint8(nb[end]) & 0xC0) == 0x80) end++;
-            uint256 y = uint256(fb + int256(i * lineH));
+            while (end < lb.length && (uint8(lb[end]) & 0xC0) == 0x80) end++;
             out = string.concat(
                 out,
-                '<tspan x="250" y="',
-                y.toString(),
-                '">',
-                _xmlEscape(string(_slice(nb, pos, end))),
-                "</tspan>"
+                _lineTspan(fb, size, i, _xmlEscape(string(_slice(lb, pos, end))))
             );
             pos = end;
         }
+    }
+
+    /// @dev round(252 - (lines*round(1.2*size))/2 + 0.74*size): the y of line 0.
+    function _firstBaseline(
+        uint256 size,
+        uint256 lines
+    ) private pure returns (int256) {
+        uint256 lineH = (size * 120 + 50) / 100; // round(size * 1.2)
+        return
+            (int256(252) *
+                100 -
+                int256(lines * lineH) *
+                50 +
+                int256(size) *
+                74 +
+                50) / 100;
+    }
+
+    function _lineTspan(
+        int256 fb,
+        uint256 size,
+        uint256 i,
+        string memory content
+    ) private pure returns (string memory) {
+        uint256 y = uint256(fb + int256(i * ((size * 120 + 50) / 100)));
+        return
+            string.concat(
+                '<tspan x="250" y="',
+                y.toString(),
+                '">',
+                content,
+                "</tspan>"
+            );
     }
 
     function _slice(

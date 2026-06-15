@@ -28,7 +28,9 @@ describe('MetadataRenderer', () => {
     const { renderer } = await loadFixture()
     const json = decode(await renderer.read.tokenURI([0n, 'alice']))
     expect(json.name).toBe('alice.testing')
-    expect(typeof json.description).toBe('string')
+    expect(json.description).toBe(
+      'Unique SimpleX namespace for contact and channel links',
+    )
     const svg = decodeImageSvg(json)
     expect(svg.includes('<svg')).toBe(true)
     expect(svg.includes('alice.testing')).toBe(true)
@@ -59,14 +61,48 @@ describe('MetadataRenderer', () => {
     expect(svg).toContain('fill="url(#tg)"') // name uses the gradient
     expect(svg).toContain('stop-color="#131D49"') // background mid stop
     expect(svg).toContain('stop-color="#FFF6E0"') // background warm-white stop
-    expect(svg).toContain('stop-color="#019bfe"') // name gradient stop
+    expect(svg).toContain('stop-color="#33CCFF"') // name gradient start (brightened)
     expect(svg).toContain('stop-color="#01F1FF"') // logo brand gradient stop
     expect(svg).toContain('translate(36,36) scale(1.95)') // logo placement
   })
 
-  it('wraps the longest label across lines and shows the full name', async () => {
+  it('keeps a short label (<=8 chars) on a single line', async () => {
     const { renderer } = await loadFixture()
-    const label = 'm'.repeat(63) // 63 + ".testing" = 71 chars -> 3 lines
+    const svg = decodeImageSvg(decode(await renderer.read.tokenURI([0n, 'ffobar'])))
+    const open = 'text-anchor="middle">'
+    const region = svg.slice(
+      svg.indexOf(open) + open.length,
+      svg.indexOf('</text>'),
+    )
+    const inners = [
+      ...region.matchAll(/<tspan\b[^>]*>([\s\S]*?)<\/tspan>/g),
+    ].map((m) => m[1])
+    expect(inners.length).toBe(1)
+    expect(inners[0]).toBe('ffobar.testing')
+  })
+
+  it('wraps a longer label, breaking before the dot (suffix on its own line)', async () => {
+    const { renderer } = await loadFixture()
+    const svg = decodeImageSvg(
+      decode(await renderer.read.tokenURI([0n, 'satoshinakamoto'])),
+    )
+    const open = 'text-anchor="middle">'
+    const region = svg.slice(
+      svg.indexOf(open) + open.length,
+      svg.indexOf('</text>'),
+    )
+    const inners = [
+      ...region.matchAll(/<tspan\b[^>]*>([\s\S]*?)<\/tspan>/g),
+    ].map((m) => m[1])
+    // label on its own line(s), the suffix (".testing") on the final line
+    expect(inners.length).toBeGreaterThan(1)
+    expect(inners[inners.length - 1]).toBe('.testing')
+    expect(inners.join('')).toBe('satoshinakamoto.testing') // full name preserved
+  })
+
+  it('wraps the longest label and shows the full name (suffix last)', async () => {
+    const { renderer } = await loadFixture()
+    const label = 'm'.repeat(63) // 63-char label -> 4 label lines + ".testing"
     const svg = decodeImageSvg(decode(await renderer.read.tokenURI([0n, label])))
     const open = 'text-anchor="middle">'
     const region = svg.slice(
@@ -76,7 +112,8 @@ describe('MetadataRenderer', () => {
     const inners = [
       ...region.matchAll(/<tspan\b[^>]*>([\s\S]*?)<\/tspan>/g),
     ].map((m) => m[1])
-    expect(inners.length).toBe(3)
+    expect(inners.length).toBe(5)
+    expect(inners[inners.length - 1]).toBe('.testing')
     expect(inners.join('')).toBe(label + '.testing') // full name preserved
   })
 })
