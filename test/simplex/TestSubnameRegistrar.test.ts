@@ -213,4 +213,35 @@ describe('SubnameRegistrar', () => {
       ).rejects.toThrow('NotParentOwner')
     })
   })
+
+  describe('label length cap', () => {
+    it('createSubname accepts a 63-byte label', async () => {
+      const { ensRegistry, subnames } = await loadFixture()
+      await approve(ensRegistry, subnames, aliceAccount)
+      const label = 'm'.repeat(63)
+      await subnames.write.createSubname([ALICE_NODE, label], {
+        account: aliceAccount,
+      })
+      expect(await ensRegistry.read.owner([subnode(ALICE_NODE, label)])).toBe(
+        getAddress(aliceAccount.address),
+      )
+    })
+
+    it('createSubname rejects a 64-byte label', async () => {
+      const { ensRegistry, subnames } = await loadFixture()
+      await approve(ensRegistry, subnames, aliceAccount)
+      await expect(
+        subnames.write.createSubname([ALICE_NODE, 'm'.repeat(64)], {
+          account: aliceAccount,
+        }),
+      ).rejects.toThrow('LabelTooLong')
+    })
+
+    it('submitSubname rejects a 64-byte label', async () => {
+      const { subnames } = await loadFixture()
+      await expect(
+        subnames.write.submitSubname([ALICE_NODE, 'm'.repeat(64)]),
+      ).rejects.toThrow('LabelTooLong')
+    })
+  })
 })

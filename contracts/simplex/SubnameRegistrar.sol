@@ -27,9 +27,15 @@ contract SubnameRegistrar is ISubnameRegistrar {
     /// @dev parentNode => child labelhashes.
     mapping(bytes32 => bytes32[]) private _children;
 
+    /// @dev Max subname label byte-length (matches the 2LD cap, the DNS octet
+    ///      limit). Bounds labelOf storage. Constant because this contract is
+    ///      immutable and ownerless.
+    uint256 public constant MAX_LABEL_LENGTH = 63;
+
     error NotParentOwner();
     error OwnerMismatch();
     error SubnameDoesNotExist();
+    error LabelTooLong(uint256 length, uint256 max);
 
     event SubnameCreated(
         bytes32 indexed parentNode,
@@ -64,6 +70,8 @@ contract SubnameRegistrar is ISubnameRegistrar {
         bytes32 parentNode,
         string calldata label
     ) external returns (bytes32 node) {
+        if (bytes(label).length > MAX_LABEL_LENGTH)
+            revert LabelTooLong(bytes(label).length, MAX_LABEL_LENGTH);
         if (ens.owner(parentNode) != msg.sender) revert NotParentOwner();
         bytes32 labelhash = keccak256(bytes(label));
         node = keccak256(abi.encodePacked(parentNode, labelhash));
@@ -80,6 +88,8 @@ contract SubnameRegistrar is ISubnameRegistrar {
         bytes32 parentNode,
         string calldata label
     ) external {
+        if (bytes(label).length > MAX_LABEL_LENGTH)
+            revert LabelTooLong(bytes(label).length, MAX_LABEL_LENGTH);
         bytes32 labelhash = keccak256(bytes(label));
         bytes32 node = keccak256(abi.encodePacked(parentNode, labelhash));
         if (!ens.recordExists(node)) revert SubnameDoesNotExist();
