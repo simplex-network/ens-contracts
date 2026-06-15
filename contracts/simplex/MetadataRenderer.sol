@@ -34,7 +34,7 @@ contract MetadataRenderer is IMetadataRenderer {
     string private constant P2 =
         "M14.0923 25.5156L16.944 22.6642L16.9429 22.6634L22.6467 16.9612L17.0513 11.3675L17.0523 11.367L14.2548 8.56979L8.65972 2.97535L11.5114 0.123963L17.1061 5.71849L22.8099 0.015625L25.6074 2.81285L19.9035 8.51562L25.4984 14.1099L31.2025 8.40729L34 11.2045L28.2958 16.907L33.8917 22.5017L31.0399 25.3531L25.4442 19.7584L19.7409 25.4611L25.3365 31.0559L22.4848 33.9073L16.8892 28.3124L11.1864 34.0156L8.38885 31.2184L14.0923 25.5156Z";
     string private constant DESC =
-        "Unique SimpleX namespace for contact and channel links";
+        "Your SimpleX name for contact address and public channel";
 
     constructor(string memory _suffix) {
         suffix = _suffix;

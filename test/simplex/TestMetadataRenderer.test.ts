@@ -29,7 +29,7 @@ describe('MetadataRenderer', () => {
     const json = decode(await renderer.read.tokenURI([0n, 'alice']))
     expect(json.name).toBe('alice.testing')
     expect(json.description).toBe(
-      'Unique SimpleX namespace for contact and channel links',
+      'Your SimpleX name for contact address and public channel',
     )
     const svg = decodeImageSvg(json)
     expect(svg.includes('<svg')).toBe(true)
