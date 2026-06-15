@@ -49,4 +49,34 @@ describe('MetadataRenderer', () => {
     // the raw, unescaped form must not appear in the text node
     expect(svg.includes('>>>')).toBe(false)
   })
+
+  it('includes the background, logo, and name gradients + brand mark', async () => {
+    const { renderer } = await loadFixture()
+    const svg = decodeImageSvg(decode(await renderer.read.tokenURI([0n, 'alice'])))
+    expect(svg).toContain('<linearGradient id="g"') // background
+    expect(svg).toContain('<linearGradient id="lg"') // logo P2
+    expect(svg).toContain('<linearGradient id="tg"') // name
+    expect(svg).toContain('fill="url(#tg)"') // name uses the gradient
+    expect(svg).toContain('stop-color="#131D49"') // background mid stop
+    expect(svg).toContain('stop-color="#FFF6E0"') // background warm-white stop
+    expect(svg).toContain('stop-color="#019bfe"') // name gradient stop
+    expect(svg).toContain('stop-color="#01F1FF"') // logo brand gradient stop
+    expect(svg).toContain('translate(36,36) scale(1.95)') // logo placement
+  })
+
+  it('wraps the longest label across lines and shows the full name', async () => {
+    const { renderer } = await loadFixture()
+    const label = 'm'.repeat(63) // 63 + ".testing" = 71 chars -> 3 lines
+    const svg = decodeImageSvg(decode(await renderer.read.tokenURI([0n, label])))
+    const open = 'text-anchor="middle">'
+    const region = svg.slice(
+      svg.indexOf(open) + open.length,
+      svg.indexOf('</text>'),
+    )
+    const inners = [
+      ...region.matchAll(/<tspan\b[^>]*>([\s\S]*?)<\/tspan>/g),
+    ].map((m) => m[1])
+    expect(inners.length).toBe(3)
+    expect(inners.join('')).toBe(label + '.testing') // full name preserved
+  })
 })

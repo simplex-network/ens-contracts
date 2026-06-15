@@ -6,7 +6,8 @@ import { describe, it, expect } from 'vitest'
 //   1. the output is always a valid JSON data URI (no JSON injection),
 //   2. the object has exactly the expected keys (no injected keys),
 //   3. the decoded `name` round-trips the label (control bytes -> space),
-//   4. the SVG text node never contains a raw '<' or '>' (no XML break-out).
+//   4. no <tspan> line content contains a raw '<' or '>' (no XML break-out),
+//   5. the wrapped lines reassemble to the full name (nothing lost on wrap).
 
 const connection = await hre.network.connect()
 
@@ -48,11 +49,19 @@ const ALPHABET = [
 ]
 
 function randomLabel(rnd: () => number): string {
-  const len = 1 + Math.floor(rnd() * 40)
+  const len = 1 + Math.floor(rnd() * 62) // up to 63 — exercises 1..3 lines
   let s = ''
   for (let i = 0; i < len; i++) s += ALPHABET[Math.floor(rnd() * ALPHABET.length)]
   return s
 }
+
+const xmlUnescape = (s: string) =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&') // must be last
 
 const decodeJson = (uri: string) => {
   expect(uri.startsWith('data:application/json;base64,')).toBe(true)
@@ -92,13 +101,21 @@ describe('MetadataRenderer (fuzz)', () => {
 
       const svg = decodeSvg(json.image)
       const open = 'text-anchor="middle">'
-      const textNode = svg.slice(
+      const region = svg.slice(
         svg.indexOf(open) + open.length,
         svg.indexOf('</text>'),
       )
-      // (4) the label can never inject markup into the SVG text node
-      expect(textNode.includes('<')).toBe(false)
-      expect(textNode.includes('>')).toBe(false)
+      const inners = [...region.matchAll(/<tspan\b[^>]*>([\s\S]*?)<\/tspan>/g)].map(
+        (m) => m[1],
+      )
+      expect(inners.length).toBeGreaterThan(0)
+      // (4) the label can never inject markup into a line's text content
+      for (const inner of inners) {
+        expect(inner.includes('<')).toBe(false)
+        expect(inner.includes('>')).toBe(false)
+      }
+      // (5) the wrapped lines reassemble (un-escaped) to the full name
+      expect(xmlUnescape(inners.join(''))).toBe(label + '.testing')
     }
   }, 30000)
 })
