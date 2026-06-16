@@ -1,7 +1,8 @@
 //SPDX-License-Identifier: MIT
 pragma solidity ~0.8.26;
 
-/// @notice Callable API of the SubnameRegistrar: create + index subnames and
+/// @notice Callable API of the SubnameRegistrar: create/delete subnames that are
+///         soulbound to the parent 2LD NFT, resolve their effective owner, and
 ///         enumerate them without an indexer.
 interface ISubnameRegistrar {
     function createSubname(
@@ -9,10 +10,17 @@ interface ISubnameRegistrar {
         string calldata label
     ) external returns (bytes32 node);
 
-    function submitSubname(
+    function deleteSubname(bytes32 parentNode, string calldata label) external;
+
+    /// @notice Permissionless GC of generation-dead subnames.
+    function purge(
         bytes32 parentNode,
-        string calldata label
+        bytes32[] calldata labelhashes
     ) external;
+
+    /// @notice Effective owner of a subname node (the 2LD NFT holder); 0 if
+    ///         untracked or generation-dead. Used by the resolver's wrapper hook.
+    function ownerOf(uint256 node) external view returns (address);
 
     function childrenLength(
         bytes32 parentNode

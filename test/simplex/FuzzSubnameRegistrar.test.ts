@@ -10,15 +10,16 @@ import {
 import { describe, it, expect } from 'vitest'
 
 // Seeded property/fuzz test for SubnameRegistrar index integrity. Over a random
-// sequence of create / repeat-create / submit operations, the invariants are:
+// sequence of create / repeat-create operations, the invariants are:
 //   - childrenLength == number of DISTINCT subnames indexed (dedup holds),
 //   - getChildren returns each distinct labelhash exactly once,
 //   - labelOf round-trips every indexed label,
-//   - every indexed child node is owned by the (parent) owner.
+//   - every indexed child node is owned in the registry by the registrar, and
+//     its effective owner (ownerOf) is the 2LD holder (soulbound).
 
 const connection = await hre.network.connect()
 const [ownerClient, aliceClient] = await connection.viem.getWalletClients()
-const ownerAccount = ownerClient.account
+const ownerAccount = ownerClient.account // stands in as BaseRegistrar
 const aliceAccount = aliceClient.account
 const ALICE_NODE = namehash('alice.testing')
 const subnode = (label: string) =>
@@ -40,6 +41,7 @@ async function fixture() {
   ])
   const subnames = await connection.viem.deployContract('SubnameRegistrar', [
     ensRegistry.address,
+    ownerAccount.address,
   ])
   await ensRegistry.write.setApprovalForAll([subnames.address, true], {
     account: aliceAccount,
@@ -69,21 +71,10 @@ describe('SubnameRegistrar (fuzz)', () => {
 
       for (let step = 0; step < 40; step++) {
         const label = labels[Math.floor(rnd() * labels.length)]
-        if (rnd() < 0.4) {
-          // create on the registry first (owned by alice = parent owner),
-          // then index via the permissionless backfill path
-          await ensRegistry.write.setSubnodeOwner(
-            [ALICE_NODE, labelhash(label), aliceAccount.address],
-            { account: aliceAccount },
-          )
-          await subnames.write.submitSubname([ALICE_NODE, label], {
-            account: aliceAccount,
-          })
-        } else {
-          await subnames.write.createSubname([ALICE_NODE, label], {
-            account: aliceAccount,
-          })
-        }
+        // create (or repeat-create, which must dedup)
+        await subnames.write.createSubname([ALICE_NODE, label], {
+          account: aliceAccount,
+        })
         indexed.add(label)
       }
 
@@ -102,10 +93,15 @@ describe('SubnameRegistrar (fuzz)', () => {
       expect(hashes.length).toBe(expectedHashes.size)
       expect(new Set(hashes)).toEqual(expectedHashes)
 
-      // labelOf round-trips, and every indexed child is owned by the parent owner
+      // labelOf round-trips; each child is registrar-owned and effectively
+      // owned by the 2LD holder
       for (let i = 0; i < hashes.length; i++) {
         expect(await subnames.read.labelOf([hashes[i]])).toBe(labelsOut[i])
-        expect(await ensRegistry.read.owner([subnode(labelsOut[i])])).toBe(
+        const node = subnode(labelsOut[i])
+        expect(await ensRegistry.read.owner([node])).toBe(
+          getAddress(subnames.address),
+        )
+        expect(await subnames.read.ownerOf([BigInt(node)])).toBe(
           getAddress(aliceAccount.address),
         )
       }

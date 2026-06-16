@@ -6,6 +6,13 @@ import "./IMetadataRenderer.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+/// @dev Notified when a 2LD is re-registered, so subname ownership/generation
+///      state (kept by the SubnameRegistrar) can be invalidated. See
+///      contracts/simplex/SubnameRegistrar.sol.
+interface ISubnameHook {
+    function onReregister(bytes32 node) external;
+}
+
 /// @dev INVARIANT (ERC721Enumerable): enumeration (`totalSupply`,
 ///      `tokenByIndex`, `balanceOf`, `tokenOfOwnerByIndex`) is maintained on
 ///      transfer/mint/burn, NOT on expiry — a name is only burned when it is
@@ -27,6 +34,9 @@ contract BaseRegistrarImplementation is
     // Max label byte-length accepted by registerWithLabel; 0 = no limit. Set at
     // deployment (and adjustable by the owner) as a per-TLD policy knob.
     uint256 public maxLabelLength;
+    // SubnameRegistrar, notified on re-registration so the previous owner's
+    // subnames are invalidated/garbage-collectable. Optional (0 = disabled).
+    address public subnameHook;
     // The ENS registry
     ENS public ens;
     // The namehash of the TLD this registrar owns (eg, .eth)
@@ -152,8 +162,16 @@ contract BaseRegistrarImplementation is
 
         expiries[id] = block.timestamp + duration;
         if (_exists(id)) {
-            // Name was previously owned, and expired
+            // Name was previously owned and expired. Burn it, and bump the
+            // subname generation so the previous registrant's subnames are
+            // invalidated (not inherited by the new owner) and become
+            // garbage-collectable. See SubnameRegistrar.onReregister.
             _burn(id);
+            if (subnameHook != address(0)) {
+                ISubnameHook(subnameHook).onReregister(
+                    keccak256(abi.encodePacked(baseNode, bytes32(id)))
+                );
+            }
         }
         _mint(owner, id);
         ens.setSubnodeOwner(baseNode, bytes32(id), owner);
@@ -193,6 +211,32 @@ contract BaseRegistrarImplementation is
     function setMaxLabelLength(uint256 newMax) external onlyOwner {
         maxLabelLength = newMax;
         emit MaxLabelLengthChanged(newMax);
+    }
+
+    // Sets the SubnameRegistrar notified on re-registration; 0 disables.
+    function setSubnameHook(address hook) external onlyOwner {
+        subnameHook = hook;
+    }
+
+    /// @dev Auto-reclaim: an NFT transfer re-points the 2LD's ENS registry node
+    ///      to the new holder, so the registry "manager" always tracks the token
+    ///      — no separate reclaim, and the previous owner can no longer manage
+    ///      the name or its subnames after a sale. Skips mint/burn (registration
+    ///      sets the registry owner itself) and is a no-op if not live.
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 firstTokenId,
+        uint256 batchSize
+    ) internal override {
+        super._beforeTokenTransfer(from, to, firstTokenId, batchSize);
+        if (
+            from != address(0) &&
+            to != address(0) &&
+            ens.owner(baseNode) == address(this)
+        ) {
+            ens.setSubnodeOwner(baseNode, bytes32(firstTokenId), to);
+        }
     }
 
     /// @dev ERC-721 metadata. Delegates to the swappable renderer, passing the

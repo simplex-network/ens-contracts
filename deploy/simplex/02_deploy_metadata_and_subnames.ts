@@ -19,17 +19,23 @@ export default deployScript(
       args: [`.${tld}`],
     })
 
-    // Subname creation + on-chain index (immutable). Users grant
-    // registry.setApprovalForAll(subnameRegistrar, true) before their first
-    // subname; createSubname forces the subname owner to the parent owner.
-    await deploy('SubnameRegistrar', {
+    // SubnameRegistrar owns + resolves subnames, soulbound to the 2LD NFT.
+    // NOTE: the authoritative SNRC deploy (scripts/deploy-*.mjs) deploys this
+    // BEFORE the PublicResolver and sets the resolver's nameWrapper slot to it
+    // (so subname records authorise via subnameRegistrar.ownerOf). The @rocketh
+    // resolver deploys earlier, so here we only wire setResolver + setSubnameHook.
+    const subnameRegistrar = await deploy('SubnameRegistrar', {
       account: deployer,
       artifact: artifacts.SubnameRegistrar,
-      args: [registry.address],
+      args: [registry.address, registrar.address],
     })
 
     if (!renderer.newlyDeployed) return
     if (network.name === 'mainnet' && !network.tags?.tenderly) return
+
+    const resolver = get<(typeof artifacts.PublicResolver)['abi']>(
+      'PublicResolver',
+    )
 
     console.log(`  - Pointing BaseRegistrar.tokenURI at MetadataRenderer`)
     await write(registrar, {
@@ -46,10 +52,27 @@ export default deployScript(
       args: [63n],
       account: owner,
     })
+
+    console.log(`  - Wiring SubnameRegistrar resolver + re-registration hook`)
+    await write(subnameRegistrar, {
+      functionName: 'setResolver',
+      args: [resolver.address],
+      account: deployer,
+    })
+    await write(registrar, {
+      functionName: 'setSubnameHook',
+      args: [subnameRegistrar.address],
+      account: owner,
+    })
   },
   {
     id: 'SimplexMetadataAndSubnames v1.0.0',
     tags: ['category:simplex', 'MetadataRenderer', 'SubnameRegistrar'],
-    dependencies: ['ENSRegistry', 'BaseRegistrarImplementation', 'SimplexController'],
+    dependencies: [
+      'ENSRegistry',
+      'BaseRegistrarImplementation',
+      'SimplexController',
+      'PublicResolver',
+    ],
   },
 )

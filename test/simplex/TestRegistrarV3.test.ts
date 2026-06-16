@@ -251,4 +251,55 @@ describe('BaseRegistrarImplementation v3', () => {
       ).rejects.toThrow()
     })
   })
+
+  describe('auto-reclaim + generation (subname ownership tracking)', () => {
+    it('re-points the ENS registry node to the new holder on transfer', async () => {
+      const { ensRegistry, baseRegistrar } = await loadFixture()
+      await registerLabel(baseRegistrar, 'alice', registrantAccount.address)
+      const node = namehash('alice.testing')
+      expect(await ensRegistry.read.owner([node])).toBe(
+        getAddress(registrantAccount.address),
+      )
+      await baseRegistrar.write.transferFrom(
+        [
+          registrantAccount.address,
+          otherAccount.address,
+          BigInt(labelhash('alice')),
+        ],
+        { account: registrantAccount },
+      )
+      // the registry "manager" followed the NFT — no separate reclaim
+      expect(await ensRegistry.read.owner([node])).toBe(
+        getAddress(otherAccount.address),
+      )
+    })
+
+    it('only the owner can set the subname hook', async () => {
+      const { baseRegistrar } = await loadFixture()
+      await expect(
+        baseRegistrar.write.setSubnameHook([otherAccount.address], {
+          account: otherAccount,
+        }),
+      ).rejects.toThrow()
+    })
+
+    it('bumps the SubnameRegistrar generation when a name is re-registered', async () => {
+      const { ensRegistry, baseRegistrar } = await loadFixture()
+      const subnames = await connection.viem.deployContract('SubnameRegistrar', [
+        ensRegistry.address,
+        baseRegistrar.address,
+      ])
+      await baseRegistrar.write.setSubnameHook([subnames.address])
+
+      await registerLabel(baseRegistrar, 'gen', registrantAccount.address)
+      const node = namehash('gen.testing')
+      expect(await subnames.read.generation([node])).toBe(0n)
+
+      // expire + grace, then re-register to a different owner
+      await connection.networkHelpers.time.increase(DURATION + 91n * DAY)
+      await registerLabel(baseRegistrar, 'gen', otherAccount.address)
+
+      expect(await subnames.read.generation([node])).toBe(1n)
+    })
+  })
 })
