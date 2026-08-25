@@ -462,7 +462,9 @@ contract SimplexController is
         uint256 totalPrice = price.base + price.premium;
         if (msg.value < totalPrice) revert InsufficientValue();
 
-        _registerCore(registration, labelhash, price);
+        // upstream semantics on the payable path: the caller is the payer, and
+        // the reverse record is theirs
+        _registerCore(registration, labelhash, price, msg.sender);
 
         if (msg.value > totalPrice) {
             (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
@@ -488,15 +490,29 @@ contract SimplexController is
         // and reading it would couple the sponsored flow to the ETH/USD feed,
         // which is the one dependency this path exists without. What was
         // actually consumed is in `RegistrarAllowanceSpent`, in attoUSD.
-        _registerCore(registration, labelhash, IPriceOracle.Price(0, 0));
+        //
+        // The reverse record goes to the buyer, not to `msg.sender`: here the
+        // caller is the sponsoring registrar's hot wallet, so `msg.sender` would
+        // name the relayer instead of the person who receives the name — and
+        // every later sponsored registration would overwrite it.
+        _registerCore(
+            registration,
+            labelhash,
+            IPriceOracle.Price(0, 0),
+            registration.owner
+        );
     }
 
     /// @dev Everything both registration paths share: availability, the
     ///      commit/reveal window, the mint, records, and the edit-credit grant.
+    /// @param reverseFor The address whose reverse record the `reverseRecord`
+    ///        bits apply to. The payer on the payable path; the buyer on the
+    ///        sponsored one, where the payer is a shared service wallet.
     function _registerCore(
         Registration calldata registration,
         bytes32 labelhash,
-        IPriceOracle.Price memory price
+        IPriceOracle.Price memory price,
+        address reverseFor
     ) private returns (uint256 expires) {
         if (!_available(registration.label, labelhash))
             revert NameNotAvailable(registration.label);
@@ -557,14 +573,14 @@ contract SimplexController is
 
             if (registration.reverseRecord & REVERSE_RECORD_ETHEREUM_BIT != 0)
                 reverseRegistrar.setNameForAddr(
-                    msg.sender,
-                    msg.sender,
+                    reverseFor,
+                    reverseFor,
                     registration.resolver,
                     string.concat(registration.label, tldSuffix)
                 );
             if (registration.reverseRecord & REVERSE_RECORD_DEFAULT_BIT != 0)
                 defaultReverseRegistrar.setNameForAddr(
-                    msg.sender,
+                    reverseFor,
                     string.concat(registration.label, tldSuffix)
                 );
         }
