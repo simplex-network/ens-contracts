@@ -32,6 +32,11 @@ contract StablePriceOracle is IPriceOracleUSD {
 
     event RentPriceChanged(uint256[] prices);
 
+    /// @dev The feed reported zero or a negative price. Zero would panic on the
+    ///      division below; negative would wrap the cast to ~2**256 and floor
+    ///      every quote to zero, handing out free names. Both fail loudly instead.
+    error InvalidPriceFeed(int256 answer);
+
     constructor(AggregatorInterface _usdOracle, uint256[] memory _rentPrices) {
         usdOracle = _usdOracle;
         price1Letter = _rentPrices[0];
@@ -112,13 +117,17 @@ contract StablePriceOracle is IPriceOracleUSD {
     }
 
     function attoUSDToWei(uint256 amount) internal view returns (uint256) {
-        uint256 ethPrice = uint256(usdOracle.latestAnswer());
-        return (amount * 1e8) / ethPrice;
+        return (amount * 1e8) / _ethPrice();
     }
 
     function weiToAttoUSD(uint256 amount) internal view returns (uint256) {
-        uint256 ethPrice = uint256(usdOracle.latestAnswer());
-        return (amount * ethPrice) / 1e8;
+        return (amount * _ethPrice()) / 1e8;
+    }
+
+    function _ethPrice() internal view returns (uint256) {
+        int256 answer = usdOracle.latestAnswer();
+        if (answer <= 0) revert InvalidPriceFeed(answer);
+        return uint256(answer);
     }
 
     function supportsInterface(

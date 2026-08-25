@@ -48,6 +48,9 @@ function changed(before: string[], after: string[]) {
 describe('controller storage layout', () => {
   it('beneficiary and frozen share one slot', async () => {
     const { controller } = await load()
+    // `freeze` refuses while sales are closed; do it before the snapshot so the
+    // only slot this test observes changing is the one `frozen` lives in
+    await controller.write.setPublicSalesOpen([true], { account: owner })
     const before = await snapshot(controller.address)
     await controller.write.freeze({ account: owner })
     const after = await snapshot(controller.address)

@@ -274,8 +274,17 @@ contract SimplexController is
     /// @notice One-way. Makes the implementation permanent and locks the sales
     ///         switch in its current position. Everything else the owner can do
     ///         survives, including `setPriceOracle` and the reserved-name setters.
+    /// @dev    Refuses while sales are closed. Freezing then would shut the
+    ///         payable path permanently — `setPublicSalesOpen` and the upgrade
+    ///         escape are disabled by the same flag — and the ordering is
+    ///         racy in practice: the pause is the guardian's, immediate, while
+    ///         the freeze is the owner's behind a timelock, so a pause answering
+    ///         an incident can land between a queued freeze and its execution.
+    ///         With this check that race fails safe: the freeze reverts and is
+    ///         re-queued.
     function freeze() external onlyOwner {
         if (frozen) revert AlreadyFrozen();
+        if (!publicSalesOpen) revert PublicSalesClosed();
         frozen = true;
         emit ContractFrozen();
     }
@@ -473,13 +482,13 @@ contract SimplexController is
         _spendAllowance(
             _rentPriceUSD(registration.label, labelhash, registration.duration)
         );
-        IPriceOracle.Price memory price = _rentPrice(
-            registration.label,
-            labelhash,
-            registration.duration
-        );
 
-        _registerCore(registration, labelhash, price);
+        // Zero cost in the event, and no `_rentPrice` call: nothing is paid on
+        // this path, so the wei figure would be a quote rather than a payment —
+        // and reading it would couple the sponsored flow to the ETH/USD feed,
+        // which is the one dependency this path exists without. What was
+        // actually consumed is in `RegistrarAllowanceSpent`, in attoUSD.
+        _registerCore(registration, labelhash, IPriceOracle.Price(0, 0));
     }
 
     /// @dev Everything both registration paths share: availability, the
@@ -596,10 +605,9 @@ contract SimplexController is
         bytes32 referrer
     ) external nonReentrant {
         bytes32 labelhash = keccak256(bytes(label));
-        uint256 costUSD = _rentPriceUSD(label, labelhash, duration);
-        _spendAllowance(costUSD);
-        IPriceOracle.Price memory price = _rentPrice(label, labelhash, duration);
-        _renewCore(label, labelhash, duration, price.base, referrer);
+        _spendAllowance(_rentPriceUSD(label, labelhash, duration));
+        // zero cost, and no feed read — see `registerWithCredit`
+        _renewCore(label, labelhash, duration, 0, referrer);
     }
 
     function _renewCore(

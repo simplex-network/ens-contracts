@@ -89,6 +89,35 @@ describe('IPriceOracleUSD', () => {
     )
   })
 
+  it('refuses a feed reporting zero rather than panicking on the division', async () => {
+    const { oracle, feed } = await load()
+    await feed.write.set([0n])
+    await expect(
+      oracle.read.price(['sixchr', 0n, YEAR]),
+    ).toBeRevertedWithCustomError('InvalidPriceFeed')
+  })
+
+  it('refuses a negative feed rather than handing out free names', async () => {
+    const { oracle, feed } = await load()
+    await feed.write.set([-100000000n])
+    await expect(
+      oracle.read.price(['sixchr', 0n, YEAR]),
+    ).toBeRevertedWithCustomError('InvalidPriceFeed')
+  })
+
+  it('quotes in attoUSD regardless — the USD path never reads the feed', async () => {
+    const { oracle, feed } = await load()
+    const before = await oracle.read.priceUSD(['sixchr', 0n, YEAR])
+    await feed.write.set([0n])
+    expect((await oracle.read.priceUSD(['sixchr', 0n, YEAR])).base).toBe(
+      before.base,
+    )
+    await feed.write.set([-100000000n])
+    expect((await oracle.read.priceUSD(['sixchr', 0n, YEAR])).base).toBe(
+      before.base,
+    )
+  })
+
   it('advertises the interface', async () => {
     const { oracle } = await load()
     // IPriceOracleUSD = IPriceOracle.priceUSD selector xor'd per ERC-165 rules;

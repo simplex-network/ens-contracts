@@ -22,6 +22,8 @@ async function fixture() {
   await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
+  // `freeze` refuses while sales are closed, so every freeze test opens them first
+  await f.controller.write.setPublicSalesOpen([true], { account: owner })
   return f
 }
 const load = () => connection.networkHelpers.loadFixture(fixture)
@@ -89,6 +91,35 @@ describe('freeze', () => {
     const { controller } = await load()
     const next = await connection.viem.deployContract('SimplexController', [])
     await controller.write.upgradeTo([next.address], { account: owner })
+  })
+
+  it('refuses while sales are closed, so a mis-ordered freeze cannot seal them shut', async () => {
+    const { controller } = await load()
+    await controller.write.setPublicSalesOpen([false], { account: guardian })
+    await expect(
+      controller.write.freeze({ account: owner }),
+    ).toBeRevertedWithCustomError('PublicSalesClosed')
+    expect(await controller.read.frozen()).toBe(false)
+
+    // the switch still works, so the freeze is simply re-queued
+    await controller.write.setPublicSalesOpen([true], { account: guardian })
+    await controller.write.freeze({ account: owner })
+    expect(await controller.read.frozen()).toBe(true)
+  })
+
+  it('the guardian pausing mid-timelock makes a queued freeze fail safe', async () => {
+    const { controller } = await load()
+    // the owner's freeze is queued behind a timelock; before it executes the
+    // guardian pauses to answer an incident on the payable path
+    await controller.write.setPublicSalesOpen([false], { account: guardian })
+    // the queued freeze now reverts rather than sealing sales closed forever
+    await expect(
+      controller.write.freeze({ account: owner }),
+    ).toBeRevertedWithCustomError('PublicSalesClosed')
+    // and everything else still works
+    await controller.write.setRegistrarAllowance([registrar.address, 1n], {
+      account: guardian,
+    })
   })
 
   it('is one-way and owner-only', async () => {
