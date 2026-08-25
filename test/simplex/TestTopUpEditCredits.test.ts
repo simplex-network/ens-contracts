@@ -1,7 +1,13 @@
 import hre from 'hardhat'
 import { describe, expect, it } from 'vitest'
 
-import { deployNamesV2, node, registration } from './fixtures/namesV2.js'
+import {
+  AMPLE_ALLOWANCE,
+  deployNamesV2,
+  EDIT_CREDIT_PRICE_USD,
+  node,
+  registration,
+} from './fixtures/namesV2.js'
 
 const connection = await hre.network.connect()
 const [ownerClient, guardianClient, registrarClient, aliceClient] =
@@ -16,7 +22,7 @@ async function fixture() {
     owner: owner.address,
     beneficiary: guardian.address,
   })
-  await f.controller.write.setRegistrarCredits([registrar.address, 3n], {
+  await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
   const reg = registration('acceptme', alice.address, {
@@ -32,16 +38,19 @@ async function fixture() {
 const load = () => connection.networkHelpers.loadFixture(fixture)
 
 describe('topUpEditCredits', () => {
-  it('adds to a name and spends one registrar credit', async () => {
+  it('adds to a name and deducts the configured price per credit', async () => {
     const { controller, resolver } = await load()
     expect(await resolver.read.editCredits([node('acceptme')])).toBe(10n)
+    const before = await controller.read.registrarAllowance([registrar.address])
 
     await controller.write.topUpEditCredits([node('acceptme'), 10n], {
       account: registrar,
     })
 
     expect(await resolver.read.editCredits([node('acceptme')])).toBe(20n)
-    expect(await controller.read.registrarCredits([registrar.address])).toBe(1n)
+    expect(before - (await controller.read.registrarAllowance([registrar.address]))).toBe(
+      10n * EDIT_CREDIT_PRICE_USD,
+    )
   })
 
   it('is additive across calls', async () => {
@@ -55,13 +64,38 @@ describe('topUpEditCredits', () => {
     expect(await resolver.read.editCredits([node('acceptme')])).toBe(25n)
   })
 
-  it('rejects an uncredited caller', async () => {
+  it('rejects a caller with no allowance', async () => {
     const { controller } = await load()
     await expect(
       controller.write.topUpEditCredits([node('acceptme'), 10n], {
         account: alice,
       }),
-    ).toBeRevertedWithCustomError('NoRegistrarCredits')
+    ).toBeRevertedWithCustomError('InsufficientAllowance')
+  })
+
+  it('refuses when the allowance cannot cover the credits asked for', async () => {
+    const { controller } = await load()
+    await controller.write.setRegistrarAllowance(
+      [registrar.address, EDIT_CREDIT_PRICE_USD * 2n],
+      { account: guardian },
+    )
+    await expect(
+      controller.write.topUpEditCredits([node('acceptme'), 3n], {
+        account: registrar,
+      }),
+    ).toBeRevertedWithCustomError('InsufficientAllowance')
+    await controller.write.topUpEditCredits([node('acceptme'), 2n], {
+      account: registrar,
+    })
+  })
+
+  it('only the owner may reprice a credit', async () => {
+    const { controller } = await load()
+    await expect(
+      controller.write.setEditCreditPrice([1n], { account: guardian }),
+    ).toBeRevertedWithString('Ownable: caller is not the owner')
+    await controller.write.setEditCreditPrice([1n], { account: owner })
+    expect(await controller.read.editCreditPriceUSD()).toBe(1n)
   })
 
   it('reverts when no default resolver is configured', async () => {

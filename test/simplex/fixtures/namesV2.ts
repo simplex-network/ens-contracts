@@ -4,6 +4,41 @@ import { encodeFunctionData, labelhash, namehash, zeroAddress, zeroHash } from '
 import { DAY } from '../../fixtures/constants.js'
 
 export const YEAR = 365n * DAY
+
+/** attoUSD per second for a given yearly price in whole dollars. */
+const perYear = (usd: bigint) => (usd * 10n ** 18n) / YEAR
+
+/** The 6+ rung: $10 a year, to the nearest attoUSD per second. */
+const BASE = perYear(10n)
+
+/**
+ * attoUSD per second, by label length: [1, 2, 3, 4, 5, 6+]. $10 a year at six
+ * characters and above, ten times more for each character lost. Built as exact
+ * multiples of the 6+ rung so the ratios hold without rounding drift; the
+ * dollar figures are therefore $10 to within a part in 1e12, not to the wei.
+ * The sixth entry is what splits 6+ from 5 — a five-entry array leaves them
+ * priced identically.
+ */
+export const PRICE_CURVE = [
+  BASE * 100000n,
+  BASE * 10000n,
+  BASE * 1000n,
+  BASE * 100n,
+  BASE * 10n,
+  BASE,
+] as const
+
+/** The yearly price of a label of `len` characters, in attoUSD. */
+export function yearPriceUSD(len: number, years = 1n) {
+  const idx = len >= 6 ? 5 : len - 1
+  return PRICE_CURVE[idx] * YEAR * years
+}
+
+/** What a one-year 6+ character name costs, in attoUSD. */
+export const YEAR_PRICE_USD = yearPriceUSD(6)
+
+/** attoUSD charged per edit credit in these tests: $0.10. */
+export const EDIT_CREDIT_PRICE_USD = 10n ** 17n
 export const TLD = 'simplex'
 export const TLD_NODE = namehash(TLD)
 
@@ -44,10 +79,13 @@ export async function deployNamesV2(
     reverseRegistrar.address,
   ])
 
+  // The real `.simplex` curve, in attoUSD per second: $1/yr at 5+ characters,
+  // $32 at 4, $128 at 3. With the feed pinned to 1e8 below, 1 attoUSD is 1 wei,
+  // so a one-year 6-character name costs ~0.9993 ETH in these tests.
   const dummyOracle = await viem.deployContract('DummyOracle', [100000000n])
   const priceOracle = await viem.deployContract('StablePriceOracle', [
     dummyOracle.address,
-    [0n, 0n, 0n, 0n, 0n],
+    PRICE_CURVE,
   ])
 
   const implementation = await viem.deployContract('SimplexController', [])
@@ -97,6 +135,9 @@ export async function deployNamesV2(
     account: accounts.owner,
   })
   await controller.write.setBeneficiary([accounts.beneficiary], {
+    account: accounts.owner,
+  })
+  await controller.write.setEditCreditPrice([EDIT_CREDIT_PRICE_USD], {
     account: accounts.owner,
   })
 
@@ -194,3 +235,6 @@ export async function signIntent(
     message,
   })
 }
+
+/** Enough allowance that a test never has to think about it: $1000. */
+export const AMPLE_ALLOWANCE = 1000n * 10n ** 18n

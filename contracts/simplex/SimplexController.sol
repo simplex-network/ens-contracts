@@ -16,6 +16,7 @@ import {ENS} from "../registry/ENS.sol";
 import {IReverseRegistrar} from "../reverseRegistrar/IReverseRegistrar.sol";
 import {IDefaultReverseRegistrar} from "../reverseRegistrar/IDefaultReverseRegistrar.sol";
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
+import {IPriceOracleUSD} from "../ethregistrar/IPriceOracleUSD.sol";
 
 /// @dev The subset of SimplexResolver the controller calls. Declared here so the
 ///      controller does not import the resolver and pull in PublicResolver.
@@ -65,7 +66,7 @@ contract SimplexController is
     uint256 public maxCommitmentAge;
     IReverseRegistrar public reverseRegistrar;
     IDefaultReverseRegistrar public defaultReverseRegistrar;
-    IPriceOracle public prices;
+    IPriceOracleUSD public prices;
     bytes32 public tldNode;
     string public tldSuffix;
 
@@ -112,7 +113,7 @@ contract SimplexController is
     error NotBeneficiary();
     error NotOwnerOrBeneficiary();
     error BeneficiaryAlreadySet();
-    error NoRegistrarCredits();
+    error InsufficientAllowance(uint256 required, uint256 available);
     error AlreadyFrozen();
     error Frozen();
     error PublicSalesClosed();
@@ -140,10 +141,15 @@ contract SimplexController is
     event ReservedNameAdded(string name);
     event ReservedNameRemoved(string name);
     event NftGateDisabled();
-    event PriceOracleChanged(IPriceOracle indexed newOracle);
+    event PriceOracleChanged(IPriceOracleUSD indexed newOracle);
     event BeneficiaryChanged(address indexed beneficiary);
-    event RegistrarCreditsSet(address indexed registrar, uint256 credits);
-    event RegistrarCreditSpent(address indexed registrar, uint256 remaining);
+    event RegistrarAllowanceSet(address indexed registrar, uint256 allowanceUSD);
+    event RegistrarAllowanceSpent(
+        address indexed registrar,
+        uint256 spentUSD,
+        uint256 remainingUSD
+    );
+    event EditCreditPriceChanged(uint256 priceUSD);
     event DefaultResolverChanged(address indexed resolver);
     event PublicSalesOpenChanged(bool open);
     event ContractFrozen();
@@ -185,7 +191,7 @@ contract SimplexController is
 
     function initialize(
         BaseRegistrarImplementation _base,
-        IPriceOracle _prices,
+        IPriceOracleUSD _prices,
         uint256 _minCommitmentAge,
         uint256 _maxCommitmentAge,
         IReverseRegistrar _reverseRegistrar,
@@ -250,15 +256,21 @@ contract SimplexController is
         emit BeneficiaryChanged(newBeneficiary);
     }
 
-    /// @notice Replace a registrar's sponsored-operation allowance. Set, not add:
+    /// @notice Replace a registrar's spending limit, in attoUSD. Set, not add:
     ///         zeroing it is the kill switch for a compromised registrar and must
     ///         take one transaction.
-    function setRegistrarCredits(
+    function setRegistrarAllowance(
         address registrar,
-        uint256 credits
+        uint256 allowanceUSD
     ) external onlyBeneficiary {
-        registrarCredits[registrar] = credits;
-        emit RegistrarCreditsSet(registrar, credits);
+        registrarAllowance[registrar] = allowanceUSD;
+        emit RegistrarAllowanceSet(registrar, allowanceUSD);
+    }
+
+    /// @notice Price of one edit credit against a registrar's allowance, attoUSD.
+    function setEditCreditPrice(uint256 priceUSD) external onlyOwner {
+        editCreditPriceUSD = priceUSD;
+        emit EditCreditPriceChanged(priceUSD);
     }
 
     /// @notice The resolver new registrations point at. Only registrations against
@@ -351,7 +363,7 @@ contract SimplexController is
     /// @notice Swap the active price oracle. Survives `freeze`, and must: the
     ///         Chainlink feed is immutable inside the oracle, so a retired feed
     ///         would otherwise end registration and renewal permanently.
-    function setPriceOracle(IPriceOracle newOracle) external onlyOwner {
+    function setPriceOracle(IPriceOracleUSD newOracle) external onlyOwner {
         if (address(newOracle) == address(0)) revert ZeroAddress();
         prices = newOracle;
         emit PriceOracleChanged(newOracle);
@@ -414,17 +426,33 @@ contract SimplexController is
             revert NftRequired();
     }
 
-    /// @dev Spend one sponsored operation from the caller's allowance. The
-    ///      beneficiary can zero the allowance in one transaction, which is the
-    ///      kill switch for a compromised registrar.
-    function _spendRegistrarCredit() private {
-        uint256 credits = registrarCredits[msg.sender];
-        if (credits == 0) revert NoRegistrarCredits();
+    /// @dev Deduct `amountUSD` from the caller's spending limit. The beneficiary
+    ///      can zero that limit in one transaction, which is the kill switch for a
+    ///      compromised registrar.
+    function _spendAllowance(uint256 amountUSD) private {
+        uint256 available = registrarAllowance[msg.sender];
+        if (amountUSD > available)
+            revert InsufficientAllowance(amountUSD, available);
+        uint256 remaining;
         unchecked {
-            credits -= 1;
+            remaining = available - amountUSD;
         }
-        registrarCredits[msg.sender] = credits;
-        emit RegistrarCreditSpent(msg.sender, credits);
+        registrarAllowance[msg.sender] = remaining;
+        emit RegistrarAllowanceSpent(msg.sender, amountUSD, remaining);
+    }
+
+    /// @dev The list price of `label` for `duration`, in attoUSD.
+    function _rentPriceUSD(
+        string calldata label,
+        bytes32 labelhash,
+        uint256 duration
+    ) private view returns (uint256) {
+        IPriceOracle.Price memory p = prices.priceUSD(
+            label,
+            base.nameExpires(uint256(labelhash)),
+            duration
+        );
+        return p.base + p.premium;
     }
 
     /// @dev Grant relayed-write allowance for `node`, but only when the name
@@ -452,7 +480,7 @@ contract SimplexController is
         bytes32 node,
         uint256 amount
     ) external nonReentrant {
-        _spendRegistrarCredit();
+        _spendAllowance(amount * editCreditPriceUSD);
         address target = defaultResolver;
         if (target == address(0)) revert NoDefaultResolver();
         IEditCredits(target).grantEditCredits(node, amount);
@@ -490,10 +518,12 @@ contract SimplexController is
     function registerWithCredit(
         Registration calldata registration
     ) external nonReentrant {
-        _spendRegistrarCredit();
         _checkSimplexGates(registration.label, false);
 
         bytes32 labelhash = keccak256(bytes(registration.label));
+        _spendAllowance(
+            _rentPriceUSD(registration.label, labelhash, registration.duration)
+        );
         IPriceOracle.Price memory price = _rentPrice(
             registration.label,
             labelhash,
@@ -622,9 +652,11 @@ contract SimplexController is
         uint256 duration,
         bytes32 referrer
     ) external nonReentrant {
-        _spendRegistrarCredit();
         bytes32 labelhash = keccak256(bytes(label));
-        _renewCore(label, labelhash, duration, 0, referrer);
+        uint256 costUSD = _rentPriceUSD(label, labelhash, duration);
+        _spendAllowance(costUSD);
+        IPriceOracle.Price memory price = _rentPrice(label, labelhash, duration);
+        _renewCore(label, labelhash, duration, price.base, referrer);
     }
 
     function _renewCore(
@@ -696,13 +728,20 @@ contract SimplexController is
     address public beneficiary;
     /// @dev One-way. Blocks upgrades and the sales switch; nothing else.
     bool public frozen;
-    /// @dev Sponsored registrations and renewals a registrar may still perform.
-    mapping(address => uint256) public registrarCredits;
+    /// @dev Spending limit per registrar, in attoUSD. A sponsored registration or
+    ///      renewal deducts the name's own list price; a top-up deducts
+    ///      `editCreditPriceUSD` per credit. Denominated in the unit the price
+    ///      list is configured in, so it does not move with the ETH price.
+    mapping(address => uint256) public registrarAllowance;
     // Slot 3: defaultResolver + publicSalesOpen pack together.
     /// @dev The resolver new registrations point at, and the only one granted edit credits.
     address public defaultResolver;
     /// @dev Gates the payable path only. Credited and reserved registrations ignore it.
     bool public publicSalesOpen;
+    /// @dev What one edit credit costs against a registrar's allowance, attoUSD.
+    ///      Zero makes top-ups free, which is a deliberate configuration and not a
+    ///      default worth relying on.
+    uint256 public editCreditPriceUSD;
 
-    uint256[45] private __gap;
+    uint256[44] private __gap;
 }

@@ -2,7 +2,14 @@ import hre from 'hardhat'
 import { labelhash, zeroAddress, zeroHash } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import { deployNamesV2, node, registration, YEAR } from './fixtures/namesV2.js'
+import {
+  AMPLE_ALLOWANCE,
+  deployNamesV2,
+  node,
+  registration,
+  YEAR,
+  YEAR_PRICE_USD,
+} from './fixtures/namesV2.js'
 import { DAY } from '../fixtures/constants.js'
 
 const connection = await hre.network.connect()
@@ -18,7 +25,7 @@ async function fixture() {
     owner: owner.address,
     beneficiary: guardian.address,
   })
-  await f.controller.write.setRegistrarCredits([registrar.address, 100n], {
+  await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
   return f
@@ -113,7 +120,7 @@ describe('edit credit grants', () => {
     await controller.write.setPublicSalesOpen([true], { account: owner })
     await controller.write.renew(['hostile', 28n * DAY, zeroHash], {
       account: alice,
-      value: 0n,
+      value: YEAR_PRICE_USD,
     })
     expect(await resolver.read.editCredits([node('hostile')])).toBe(60n)
   })

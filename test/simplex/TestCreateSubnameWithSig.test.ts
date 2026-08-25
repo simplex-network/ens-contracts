@@ -3,6 +3,7 @@ import { keccak256, namehash, toHex } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import {
+  AMPLE_ALLOWANCE,
   deployNamesV2,
   FAR_FUTURE,
   node,
@@ -29,7 +30,7 @@ async function fixture() {
     owner: owner.address,
     beneficiary: guardian.address,
   })
-  await f.controller.write.setRegistrarCredits([registrar.address, 20n], {
+  await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
   const reg = registration('alicehas', alice.address, {

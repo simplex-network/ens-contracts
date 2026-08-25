@@ -104,10 +104,10 @@ describe('admin split', () => {
   })
 
   describe('guardian only, owner rejected', () => {
-    it('setRegistrarCredits and setBeneficiary', async () => {
+    it('setRegistrarAllowance and setBeneficiary', async () => {
       const { controller } = await load()
       await expect(
-        controller.write.setRegistrarCredits([alice.address, 1n], {
+        controller.write.setRegistrarAllowance([alice.address, 1n], {
           account: owner,
         }),
       ).toBeRevertedWithCustomError('NotBeneficiary')
@@ -115,10 +115,10 @@ describe('admin split', () => {
         controller.write.setBeneficiary([alice.address], { account: owner }),
       ).toBeRevertedWithCustomError('NotBeneficiary')
 
-      await controller.write.setRegistrarCredits([alice.address, 1n], {
+      await controller.write.setRegistrarAllowance([alice.address, 1n], {
         account: guardian,
       })
-      expect(await controller.read.registrarCredits([alice.address])).toBe(1n)
+      expect(await controller.read.registrarAllowance([alice.address])).toBe(1n)
     })
   })
 })

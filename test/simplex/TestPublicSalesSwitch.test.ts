@@ -2,7 +2,13 @@ import hre from 'hardhat'
 import { zeroAddress, zeroHash } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import { deployNamesV2, registration, YEAR } from './fixtures/namesV2.js'
+import {
+  AMPLE_ALLOWANCE,
+  deployNamesV2,
+  registration,
+  YEAR,
+  YEAR_PRICE_USD,
+} from './fixtures/namesV2.js'
 import { DAY } from '../fixtures/constants.js'
 
 const connection = await hre.network.connect()
@@ -18,7 +24,7 @@ async function fixture() {
     owner: owner.address,
     beneficiary: guardian.address,
   })
-  await f.controller.write.setRegistrarCredits([registrar.address, 100n], {
+  await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
   return f
@@ -30,7 +36,10 @@ async function payableRegister(controller: any, label: string) {
   await controller.write.commit([await controller.read.makeCommitment([reg])], {
     account: alice,
   })
-  return controller.write.register([reg], { account: alice, value: 0n })
+  return controller.write.register([reg], {
+    account: alice,
+    value: 2n * YEAR_PRICE_USD,
+  })
 }
 
 async function creditedRegister(controller: any, label: string) {
@@ -56,7 +65,10 @@ describe('public sales switch', () => {
     )
     // the matcher needs the raw write promise, so this is not wrapped in a helper
     await expect(
-      controller.write.register([reg], { account: alice, value: 0n }),
+      controller.write.register([reg], {
+        account: alice,
+        value: 2n * YEAR_PRICE_USD,
+      }),
     ).toBeRevertedWithCustomError('PublicSalesClosed')
 
     await controller.write.setPublicSalesOpen([true], { account: owner })
@@ -87,7 +99,7 @@ describe('public sales switch', () => {
     })
     await controller.write.renew(['renewany', 28n * DAY, zeroHash], {
       account: alice,
-      value: 0n,
+      value: YEAR_PRICE_USD,
     })
   })
 

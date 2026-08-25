@@ -102,12 +102,12 @@ describe('controller storage layout', () => {
   it('the credits mapping is keyed from its own slot', async () => {
     const { controller } = await load()
     const before = await snapshot(controller.address)
-    await controller.write.setRegistrarCredits([alice.address, 7n], {
+    await controller.write.setRegistrarAllowance([alice.address, 7n], {
       account: guardian,
     })
     const after = await snapshot(controller.address)
     // a mapping write lands at a hashed slot, never in the scanned range
     expect(changed(before, after)).toHaveLength(0)
-    expect(await controller.read.registrarCredits([alice.address])).toBe(7n)
+    expect(await controller.read.registrarAllowance([alice.address])).toBe(7n)
   })
 })

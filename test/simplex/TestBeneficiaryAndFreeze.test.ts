@@ -2,7 +2,7 @@ import hre from 'hardhat'
 import { encodeFunctionData, parseEther, zeroAddress, zeroHash } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import { deployNamesV2, registration, YEAR } from './fixtures/namesV2.js'
+import { AMPLE_ALLOWANCE, deployNamesV2, registration, YEAR } from './fixtures/namesV2.js'
 
 const connection = await hre.network.connect()
 const publicClient = await connection.viem.getPublicClient()
@@ -19,7 +19,7 @@ async function fixture() {
     owner: owner.address,
     beneficiary: guardian.address,
   })
-  await f.controller.write.setRegistrarCredits([registrar.address, 100n], {
+  await f.controller.write.setRegistrarAllowance([registrar.address, AMPLE_ALLOWANCE], {
     account: guardian,
   })
   return f
@@ -141,10 +141,13 @@ describe('freeze', () => {
   it('leaves the guardian powers working too', async () => {
     const { controller } = await load()
     await controller.write.freeze({ account: owner })
-    await controller.write.setRegistrarCredits([registrar.address, 5n], {
-      account: guardian,
-    })
-    expect(await controller.read.registrarCredits([registrar.address])).toBe(5n)
+    await controller.write.setRegistrarAllowance(
+      [registrar.address, 5n * 10n ** 18n],
+      { account: guardian },
+    )
+    expect(await controller.read.registrarAllowance([registrar.address])).toBe(
+      5n * 10n ** 18n,
+    )
     await controller.write.setBeneficiary([alice.address], {
       account: guardian,
     })
