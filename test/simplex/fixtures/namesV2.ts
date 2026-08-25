@@ -37,8 +37,7 @@ export function yearPriceUSD(len: number, years = 1n) {
 /** What a one-year 6+ character name costs, in attoUSD. */
 export const YEAR_PRICE_USD = yearPriceUSD(6)
 
-/** attoUSD charged per edit credit in these tests: $0.10. */
-export const EDIT_CREDIT_PRICE_USD = 10n ** 17n
+
 export const TLD = 'simplex'
 export const TLD_NODE = namehash(TLD)
 
@@ -125,7 +124,6 @@ export async function deployNamesV2(
     subnameRegistrar.address, // wrapper slot: subname authorisation routes here
     controller.address, // trustedETHController
     zeroAddress, // no reverse registrar
-    controller.address, // may grant edit credits
   ])
   await subnameRegistrar.write.setResolver([resolver.address])
 
@@ -135,9 +133,6 @@ export async function deployNamesV2(
     account: accounts.owner,
   })
   await controller.write.setBeneficiary([accounts.beneficiary], {
-    account: accounts.owner,
-  })
-  await controller.write.setEditCreditPrice([EDIT_CREDIT_PRICE_USD], {
     account: accounts.owner,
   })
 

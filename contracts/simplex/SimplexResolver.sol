@@ -9,10 +9,12 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 /// @notice PublicResolver plus a sponsored path: the name's owner signs a
 ///         record change and a relayer submits it, so a user never needs ETH.
 ///
-/// The sponsored path is metered per name by edit credits, granted by the
-/// controller at registration and renewal. A direct `setText` by the owner is
-/// never metered. Credits are added, never set: `renew` is unauthenticated, so
-/// set semantics would let a stranger collapse an owner's allowance.
+/// Authority comes from the signature and nothing else. A one-shot EIP-712
+/// intent, bound to the node and consumed by a per-signer nonce, is what makes
+/// a relayed write safe; the relayer chooses only whether to pay the gas.
+/// Metering how much relaying a name may consume is the relayer's business and
+/// is done off-chain: it is the only caller of these functions, so an on-chain
+/// budget could only stop a transaction it had already decided to pay for.
 contract SimplexResolver is PublicResolver {
     bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
         keccak256(
@@ -27,30 +29,19 @@ contract SimplexResolver is PublicResolver {
     bytes32 public constant CLEAR_RECORDS_TYPEHASH =
         keccak256("ClearRecords(bytes32 node,uint256 nonce,uint256 deadline)");
 
-    /// @dev The controller may grant credits. Set once at deployment.
-    address public immutable trustedController;
-
-    /// @dev Relayed writes remaining, per name.
-    mapping(bytes32 => uint256) public editCredits;
-
     /// @dev One counter per signer. Shared across every node they own, so
     ///      intents from one owner are consumed strictly in order.
     mapping(address => uint256) public nonces;
 
-    event EditCreditsGranted(bytes32 indexed node, uint256 added, uint256 total);
-
-    error NotController();
     error SignatureExpired();
     error InvalidNonce();
     error InvalidSignature();
-    error NoEditCredits();
 
     constructor(
         ENS _ens,
         INameWrapper wrapperAddress,
         address _trustedETHController,
-        address _trustedReverseRegistrar,
-        address _trustedController
+        address _trustedReverseRegistrar
     )
         PublicResolver(
             _ens,
@@ -58,9 +49,7 @@ contract SimplexResolver is PublicResolver {
             _trustedETHController,
             _trustedReverseRegistrar
         )
-    {
-        trustedController = _trustedController;
-    }
+    {}
 
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return
@@ -73,14 +62,6 @@ contract SimplexResolver is PublicResolver {
                     address(this)
                 )
             );
-    }
-
-    /// @notice Add to a name's relayed-write allowance.
-    function grantEditCredits(bytes32 node, uint256 amount) external {
-        if (msg.sender != trustedController) revert NotController();
-        uint256 total = editCredits[node] + amount;
-        editCredits[node] = total;
-        emit EditCreditsGranted(node, amount, total);
     }
 
     /// @notice Write a text record on behalf of the name's owner. Authority
@@ -115,7 +96,7 @@ contract SimplexResolver is PublicResolver {
 
     /// @notice Retire every record on `node` in one constant-gas write, on behalf
     ///         of its owner. What a gifted name inherited from its sender is
-    ///         cleared for one credit rather than one credit per stale key.
+    ///         cleared in a single call rather than one call per stale key.
     function clearRecordsWithSig(
         bytes32 node,
         uint256 nonce,
@@ -145,7 +126,7 @@ contract SimplexResolver is PublicResolver {
             owner = nameWrapper.ownerOf(uint256(node));
     }
 
-    /// @dev Verify a signed intent, then spend the nonce and one edit credit.
+    /// @dev Verify a signed intent, then spend the nonce.
     function _consumeIntent(
         bytes32 node,
         bytes32 structHash,
@@ -161,10 +142,7 @@ contract SimplexResolver is PublicResolver {
         );
         if (!SignatureChecker.isValidSignatureNow(owner, digest, sig))
             revert InvalidSignature();
-        uint256 credits = editCredits[node];
-        if (credits == 0) revert NoEditCredits();
         unchecked {
-            editCredits[node] = credits - 1;
             nonces[owner] = nonce + 1;
         }
     }

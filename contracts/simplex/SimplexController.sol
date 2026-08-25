@@ -18,12 +18,6 @@ import {IDefaultReverseRegistrar} from "../reverseRegistrar/IDefaultReverseRegis
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
 import {IPriceOracleUSD} from "../ethregistrar/IPriceOracleUSD.sol";
 
-/// @dev The subset of SimplexResolver the controller calls. Declared here so the
-///      controller does not import the resolver and pull in PublicResolver.
-interface IEditCredits {
-    function grantEditCredits(bytes32 node, uint256 amount) external;
-}
-
 /// @dev Fork of ETHRegistrarController with additional access controls:
 ///      - Minimum name length gate (admin can lower monotonically)
 ///      - Reserved names (admin-managed blocklist)
@@ -44,9 +38,6 @@ contract SimplexController is
     uint8 constant REVERSE_RECORD_ETHEREUM_BIT = 1;
     uint8 constant REVERSE_RECORD_DEFAULT_BIT = 2;
     uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
-    /// @dev Relayed record writes granted per year of registration or renewal.
-    uint256 public constant EDIT_CREDITS_PER_YEAR = 10;
-    uint256 private constant SECONDS_PER_YEAR = 365 days;
     uint64 private constant MAX_EXPIRY = type(uint64).max;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
@@ -117,7 +108,6 @@ contract SimplexController is
     error AlreadyFrozen();
     error Frozen();
     error PublicSalesClosed();
-    error NoDefaultResolver();
 
     event NameRegistered(
         string label,
@@ -149,11 +139,9 @@ contract SimplexController is
         uint256 spentUSD,
         uint256 remainingUSD
     );
-    event EditCreditPriceChanged(uint256 priceUSD);
     event DefaultResolverChanged(address indexed resolver);
     event PublicSalesOpenChanged(bool open);
     event ContractFrozen();
-    event EditCreditsToppedUp(bytes32 indexed node, uint256 amount);
 
     error ReentrantCall();
 
@@ -267,12 +255,6 @@ contract SimplexController is
         emit RegistrarAllowanceSet(registrar, allowanceUSD);
     }
 
-    /// @notice Price of one edit credit against a registrar's allowance, attoUSD.
-    function setEditCreditPrice(uint256 priceUSD) external onlyOwner {
-        editCreditPriceUSD = priceUSD;
-        emit EditCreditPriceChanged(priceUSD);
-    }
-
     /// @notice The resolver new registrations point at. Only registrations against
     ///         this resolver are granted edit credits.
     function setDefaultResolver(address resolver) external onlyOwner {
@@ -351,7 +333,6 @@ contract SimplexController is
         bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
         ens.setRecord(namehash, owner, resolver, 0);
         base.transferFrom(address(this), owner, uint256(labelhash));
-        _grantEditCredits(namehash, resolver, duration);
     }
 
     function disableNftGate() external onlyOwner {
@@ -453,38 +434,6 @@ contract SimplexController is
             duration
         );
         return p.base + p.premium;
-    }
-
-    /// @dev Grant relayed-write allowance for `node`, but only when the name
-    ///      actually uses the default resolver — credits live in the resolver, so
-    ///      granting them anywhere else would be a no-op the user could not spend.
-    function _grantEditCredits(
-        bytes32 node,
-        address resolverInUse,
-        uint256 duration
-    ) private {
-        address target = defaultResolver;
-        if (target == address(0) || resolverInUse != target) return;
-        uint256 yearsBought = duration / SECONDS_PER_YEAR;
-        if (yearsBought == 0) yearsBought = 1;
-        IEditCredits(target).grantEditCredits(
-            node,
-            EDIT_CREDITS_PER_YEAR * yearsBought
-        );
-    }
-
-    /// @notice Buy relayed-write allowance for an existing name. Spends one
-    ///         registrar credit, so the same allowance and the same kill switch
-    ///         cover it.
-    function topUpEditCredits(
-        bytes32 node,
-        uint256 amount
-    ) external nonReentrant {
-        _spendAllowance(amount * editCreditPriceUSD);
-        address target = defaultResolver;
-        if (target == address(0)) revert NoDefaultResolver();
-        IEditCredits(target).grantEditCredits(node, amount);
-        emit EditCreditsToppedUp(node, amount);
     }
 
     /// @notice Register and pay. Gated by the public sales switch; the credited
@@ -611,12 +560,6 @@ contract SimplexController is
                 );
         }
 
-        _grantEditCredits(
-            namehash,
-            registration.resolver,
-            registration.duration
-        );
-
         emit NameRegistered(
             registration.label,
             labelhash,
@@ -667,9 +610,6 @@ contract SimplexController is
         bytes32 referrer
     ) private returns (uint256 expires) {
         expires = base.renew(uint256(labelhash), duration);
-
-        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
-        _grantEditCredits(namehash, ens.resolver(namehash), duration);
 
         emit NameRenewed(label, labelhash, cost, expires, referrer);
     }
@@ -722,26 +662,21 @@ contract SimplexController is
     // 49 -> 48 when `_reentrancyStatus` was added (reentrancy guard).
     uint256 private _reentrancyStatus;
 
-    // --- names v2: governance, allowance and pricing. 48 -> 44. ---
+    // --- names v2: governance, allowance and pricing. 48 -> 45. ---
     // Slot 1: beneficiary + frozen pack together.
     /// @dev Guardian key: the registrar allowance, the sales switch, and `withdraw`'s payee.
     address public beneficiary;
     /// @dev One-way. Blocks upgrades and the sales switch; nothing else.
     bool public frozen;
     /// @dev Spending limit per registrar, in attoUSD. A sponsored registration or
-    ///      renewal deducts the name's own list price; a top-up deducts
-    ///      `editCreditPriceUSD` per credit. Denominated in the unit the price
-    ///      list is configured in, so it does not move with the ETH price.
+    ///      renewal deducts the name's own list price. Denominated in the unit the
+    ///      price list is configured in, so it does not move with the ETH price.
     mapping(address => uint256) public registrarAllowance;
     // Slot 3: defaultResolver + publicSalesOpen pack together.
-    /// @dev The resolver new registrations point at, and the only one granted edit credits.
+    /// @dev The resolver `registerReserved` points a brand's name at.
     address public defaultResolver;
     /// @dev Gates the payable path only. Credited and reserved registrations ignore it.
     bool public publicSalesOpen;
-    /// @dev What one edit credit costs against a registrar's allowance, attoUSD.
-    ///      Zero makes top-ups free, which is a deliberate configuration and not a
-    ///      default worth relying on.
-    uint256 public editCreditPriceUSD;
 
-    uint256[44] private __gap;
+    uint256[45] private __gap;
 }

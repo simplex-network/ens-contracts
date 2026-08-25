@@ -1,0 +1,150 @@
+import hre from 'hardhat'
+import { labelhash, zeroAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
+
+import { deployNamesV2, node, YEAR } from './fixtures/namesV2.js'
+import { DAY } from '../fixtures/constants.js'
+
+const connection = await hre.network.connect()
+const [ownerClient, guardianClient, , brandClient] =
+  await connection.viem.getWalletClients()
+const owner = ownerClient.account
+const guardian = guardianClient.account
+const brand = brandClient.account
+
+async function fixture() {
+  return deployNamesV2(connection, {
+    owner: owner.address,
+    beneficiary: guardian.address,
+  })
+}
+const load = () => connection.networkHelpers.loadFixture(fixture)
+
+/**
+ * `registerReserved` is how a brand receives its name. `setSubnodeOwner` alone
+ * sets an owner but not a resolver, so without the resolver path the name would
+ * not resolve at all and the brand would need ETH to fix it.
+ */
+describe('registerReserved', () => {
+  it('gives the brand the token, the registry node and a working resolver', async () => {
+    const { controller, ens, baseRegistrar, resolver } = await load()
+    await controller.write.addReservedNames([['brandname']], { account: owner })
+    await controller.write.registerReserved(['brandname', brand.address, YEAR], {
+      account: owner,
+    })
+
+    expect(
+      (
+        await baseRegistrar.read.ownerOf([BigInt(labelhash('brandname'))])
+      ).toLowerCase(),
+    ).toBe(brand.address.toLowerCase())
+    expect((await ens.read.owner([node('brandname')])).toLowerCase()).toBe(
+      brand.address.toLowerCase(),
+    )
+    expect((await ens.read.resolver([node('brandname')])).toLowerCase()).toBe(
+      resolver.address.toLowerCase(),
+    )
+  })
+
+  it('the brand can then have records relayed without ever holding ETH', async () => {
+    const { controller, resolver } = await load()
+    await controller.write.addReservedNames([['relayable']], { account: owner })
+    await controller.write.registerReserved(['relayable', brand.address, YEAR], {
+      account: owner,
+    })
+    expect((await resolver.read.relayedSigner([node('relayable')])).toLowerCase()).toBe(
+      brand.address.toLowerCase(),
+    )
+  })
+
+  it('refuses a name that is not reserved', async () => {
+    const { controller } = await load()
+    await expect(
+      controller.write.registerReserved(['unreserved', brand.address, YEAR], {
+        account: owner,
+      }),
+    ).toBeRevertedWithCustomError('NameNotReserved')
+  })
+
+  it('refuses a duration below the minimum', async () => {
+    const { controller } = await load()
+    await controller.write.addReservedNames([['tooshortterm']], {
+      account: owner,
+    })
+    await expect(
+      controller.write.registerReserved(
+        ['tooshortterm', brand.address, 27n * DAY],
+        { account: owner },
+      ),
+    ).toBeRevertedWithCustomError('DurationTooShort')
+  })
+
+  it('is owner-only — the guardian may reserve but not hand out', async () => {
+    const { controller } = await load()
+    await controller.write.addReservedNames([['guardedname']], {
+      account: guardian,
+    })
+    await expect(
+      controller.write.registerReserved(
+        ['guardedname', brand.address, YEAR],
+        { account: guardian },
+      ),
+    ).toBeRevertedWithString('Ownable: caller is not the owner')
+  })
+
+  it('cannot take a name someone already holds', async () => {
+    const { controller, baseRegistrar } = await load()
+    await controller.write.setPublicSalesOpen([true], { account: owner })
+    const reg = {
+      label: 'alreadyheld',
+      owner: brand.address,
+      duration: YEAR,
+      secret: `0x${'00'.repeat(32)}` as `0x${string}`,
+      resolver: zeroAddress,
+      data: [] as `0x${string}`[],
+      reverseRecord: 0,
+      referrer: `0x${'00'.repeat(32)}` as `0x${string}`,
+    }
+    await controller.write.commit(
+      [await controller.read.makeCommitment([reg])],
+      { account: brand },
+    )
+    await controller.write.register([reg], {
+      account: brand,
+      value: 10n ** 21n,
+    })
+
+    await controller.write.addReservedNames([['alreadyheld']], {
+      account: owner,
+    })
+    await expect(
+      controller.write.registerReserved(
+        ['alreadyheld', owner.address, YEAR],
+        { account: owner },
+      ),
+    ).toBeRevertedWithoutReason()
+    expect(
+      (
+        await baseRegistrar.read.ownerOf([BigInt(labelhash('alreadyheld'))])
+      ).toLowerCase(),
+    ).toBe(brand.address.toLowerCase())
+  })
+
+  it('degrades to a bare registration when no default resolver is set', async () => {
+    const { controller, ens } = await load()
+    await controller.write.setDefaultResolver([zeroAddress], { account: owner })
+    await controller.write.addReservedNames([['noresolver']], {
+      account: owner,
+    })
+    await controller.write.registerReserved(
+      ['noresolver', brand.address, YEAR],
+      { account: owner },
+    )
+    // owner is set, but the name does not resolve — pinned so the behaviour is
+    // a deliberate choice rather than a surprise
+    expect((await ens.read.owner([node('noresolver')])).toLowerCase()).toBe(
+      brand.address.toLowerCase(),
+    )
+    expect(BigInt(await ens.read.resolver([node('noresolver')]))).toBe(0n)
+  })
+})

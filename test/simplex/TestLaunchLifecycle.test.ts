@@ -10,7 +10,6 @@ import {
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import {
-  EDIT_CREDIT_PRICE_USD,
   FAR_FUTURE,
   PRICE_CURVE,
   signIntent,
@@ -173,7 +172,6 @@ describe('launch lifecycle', () => {
         subnameRegistrar.address,
         controller.address,
         zeroAddress,
-        controller.address,
       ])
       await subnameRegistrar.write.setResolver([resolver.address])
     })
@@ -199,7 +197,6 @@ describe('launch lifecycle', () => {
       await baseRegistrar.write.setMaxLabelLength([63n])
       await baseRegistrar.write.setSubnameHook([subnameRegistrar.address])
       await controller.write.setDefaultResolver([resolver.address])
-      await controller.write.setEditCreditPrice([EDIT_CREDIT_PRICE_USD])
 
       expect(await baseRegistrar.read.maxLabelLength()).toBe(63n)
       expect((await baseRegistrar.read.subnameHook()).toLowerCase()).toBe(
@@ -207,9 +204,6 @@ describe('launch lifecycle', () => {
       )
       expect((await controller.read.defaultResolver()).toLowerCase()).toBe(
         resolver.address.toLowerCase(),
-      )
-      expect(await controller.read.editCreditPriceUSD()).toBe(
-        EDIT_CREDIT_PRICE_USD,
       )
     })
 
@@ -385,7 +379,6 @@ describe('launch lifecycle', () => {
             await baseRegistrar.read.ownerOf([BigInt(labelhash(label))])
           ).toLowerCase(),
         ).toBe(owner.toLowerCase())
-        expect(await resolver.read.editCredits([node(label)])).toBe(10n)
       }
       const spent =
         before - (await controller.read.registrarAllowance([registrar.address]))
@@ -413,7 +406,6 @@ describe('launch lifecycle', () => {
         'https://smp/alice',
       )
       // the initial record set costs no edit credit
-      expect(await resolver.read.editCredits([node(label)])).toBe(10n)
     })
 
     it('refuses a name below the character minimum, and a reserved one', async () => {
@@ -474,7 +466,6 @@ describe('launch lifecycle', () => {
       expect(
         await resolver.read.text([node(OWNED), 'simplex.contact']),
       ).toBe('https://smp/alice-1')
-      expect(await resolver.read.editCredits([node(OWNED)])).toBe(9n)
     })
 
     it('relays a record clear', async () => {
@@ -496,20 +487,6 @@ describe('launch lifecycle', () => {
         { account: registrar },
       )
       expect(await resolver.read.text([node(OWNED), 'simplex.contact'])).toBe('')
-      expect(await resolver.read.editCredits([node(OWNED)])).toBe(8n)
-    })
-
-    it('sells more edit credits against the allowance', async () => {
-      const before = await controller.read.registrarAllowance([
-        registrar.address,
-      ])
-      await controller.write.topUpEditCredits([node(OWNED), 20n], {
-        account: registrar,
-      })
-      expect(await resolver.read.editCredits([node(OWNED)])).toBe(28n)
-      expect(
-        before - (await controller.read.registrarAllowance([registrar.address])),
-      ).toBe(20n * EDIT_CREDIT_PRICE_USD)
     })
 
     it('renews on her behalf', async () => {
@@ -527,7 +504,6 @@ describe('launch lifecycle', () => {
           (await controller.read.registrarAllowance([registrar.address])),
       ).toBe(yearPriceUSD(6))
       // renewal grants credits too
-      expect(await resolver.read.editCredits([node(OWNED)])).toBe(38n)
     })
 
     it('relays the registry approval and a subname, then a record on it', async () => {
@@ -591,7 +567,6 @@ describe('launch lifecycle', () => {
         alice.address.toLowerCase(),
       )
 
-      await controller.write.topUpEditCredits([sub, 5n], { account: registrar })
       const m = {
         node: sub,
         key: 'simplex.contact',
@@ -751,7 +726,6 @@ describe('launch lifecycle', () => {
       expect((await ens.read.resolver([node('newbrand')])).toLowerCase()).toBe(
         resolver.address.toLowerCase(),
       )
-      expect(await resolver.read.editCredits([node('newbrand')])).toBe(10n)
     })
 
     it('releasing a reserved name is admin-only', async () => {
@@ -827,15 +801,14 @@ describe('launch lifecycle', () => {
       ).toBeRevertedWithCustomError('NameReserved')
     })
 
-    it('anyone may renew anyone name, and it is a gift of credits', async () => {
-      const before = await resolver.read.editCredits([node('freshname')])
+    it('anyone may renew anyone name — renewal is unauthenticated by design', async () => {
+      const tokenId = BigInt(labelhash('freshname'))
+      const before = await baseRegistrar.read.nameExpires([tokenId])
       await controller.write.renew(['freshname', YEAR, zeroHash], {
         account: bob,
         value: 2n * yearPriceUSD(6),
       })
-      expect(await resolver.read.editCredits([node('freshname')])).toBe(
-        before + 10n,
-      )
+      expect(await baseRegistrar.read.nameExpires([tokenId])).toBe(before + YEAR)
     })
 
     it('the guardian can pause and reopen', async () => {
@@ -926,7 +899,6 @@ describe('launch lifecycle', () => {
       expect((await ens.read.owner([node('latebrand')])).toLowerCase()).toBe(
         brand.address.toLowerCase(),
       )
-      expect(await resolver.read.editCredits([node('latebrand')])).toBe(10n)
     })
 
     it('the namespace can still survive its own price feed', async () => {
@@ -959,9 +931,6 @@ describe('launch lifecycle', () => {
       await controller.write.setMinCharLength([5], { account: admin })
       expect(await controller.read.minCharLength()).toBe(5)
       await controller.write.setDefaultResolver([resolver.address], {
-        account: admin,
-      })
-      await controller.write.setEditCreditPrice([EDIT_CREDIT_PRICE_USD], {
         account: admin,
       })
       await baseRegistrar.write.setMetadataRenderer([renderer.address], {

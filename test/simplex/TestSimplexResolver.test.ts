@@ -43,13 +43,11 @@ async function fixture() {
     labelhash('addr'),
     reverseRegistrar.address,
   ])
-  // ownerAccount stands in for the controller: it is what may grant credits.
   const resolver = await connection.viem.deployContract('SimplexResolver', [
     ensRegistry.address,
     zeroAddress,
     ownerAccount.address,
     zeroAddress,
-    ownerAccount.address,
   ])
   await baseRegistrar.write.registerWithLabel([
     'alicechat',
@@ -107,11 +105,8 @@ describe('SimplexResolver', () => {
     )
   })
 
-  it('lets a relayer write a record the owner signed, spending one credit', async () => {
+  it('lets a relayer write a record the owner signed', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 10n])
-    expect(await resolver.read.editCredits([NODE])).toBe(10n)
-
     const message = {
       node: NODE,
       key: KEY,
@@ -125,61 +120,20 @@ describe('SimplexResolver', () => {
       { account: relayerClient.account },
     )
     expect(await resolver.read.text([NODE, KEY])).toBe(VALUE)
-    expect(await resolver.read.editCredits([NODE])).toBe(9n)
+    // the relayer paid the gas; nothing on-chain meters how much it may relay
+    expect(await resolver.read.nonces([aliceAccount.address])).toBe(1n)
   })
 
-  it('refuses when the allowance is exhausted', async () => {
+  it('leaves a direct setText by the owner untouched', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 1n])
-    for (const nonce of [0n, 1n]) {
-      const message = {
-        node: NODE,
-        key: KEY,
-        value: `${VALUE}${nonce}`,
-        nonce,
-        deadline: FAR_FUTURE,
-      }
-      const sig = await signSetText(aliceClient, resolver.address, message)
-      const call = resolver.write.setTextWithSig(
-        [message.node, message.key, message.value, message.nonce, message.deadline, sig],
-        { account: relayerClient.account },
-      )
-      if (nonce === 0n) await call
-      else await expect(call).rejects.toThrow('NoEditCredits')
-    }
-  })
-
-  it('does not meter a direct setText by the owner', async () => {
-    const { resolver } = await loadFixture()
-    // No credits granted at all.
-    expect(await resolver.read.editCredits([NODE])).toBe(0n)
     await resolver.write.setText([NODE, KEY, VALUE], {
       account: aliceClient.account,
     })
     expect(await resolver.read.text([NODE, KEY])).toBe(VALUE)
   })
 
-  it('adds credits rather than replacing them, so a hostile renewal cannot shrink the allowance', async () => {
-    const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 100n])
-    // A stranger renews for the minimum term; the controller grants 10 more.
-    // With set semantics this would collapse 100 to 10.
-    await resolver.write.grantEditCredits([NODE, 10n])
-    expect(await resolver.read.editCredits([NODE])).toBe(110n)
-  })
-
-  it('rejects a grant from anyone but the controller', async () => {
-    const { resolver } = await loadFixture()
-    await expect(
-      resolver.write.grantEditCredits([NODE, 10n], {
-        account: bobClient.account,
-      }),
-    ).rejects.toThrow('NotController')
-  })
-
   it('rejects a signature from anyone but the name owner', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 10n])
     const message = {
       node: NODE,
       key: KEY,
@@ -198,7 +152,6 @@ describe('SimplexResolver', () => {
 
   it('rejects a replayed signature', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 10n])
     const message = {
       node: NODE,
       key: KEY,
@@ -223,7 +176,6 @@ describe('SimplexResolver', () => {
 
   it('rejects an expired signature', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 10n])
     const message = {
       node: NODE,
       key: KEY,
@@ -242,7 +194,6 @@ describe('SimplexResolver', () => {
 
   it('rejects a signature bound to a different value', async () => {
     const { resolver } = await loadFixture()
-    await resolver.write.grantEditCredits([NODE, 10n])
     const message = {
       node: NODE,
       key: KEY,

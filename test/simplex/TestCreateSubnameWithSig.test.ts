@@ -139,7 +139,6 @@ describe('createSubnameWithSig', () => {
     )
 
     // 3. and she signs a record on it; bob relays that too
-    await controller.write.topUpEditCredits([SUB, 5n], { account: registrar })
     const text = {
       node: SUB,
       key: 'simplex.contact',

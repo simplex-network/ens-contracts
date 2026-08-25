@@ -46,7 +46,6 @@ async function fixture() {
   await f.subnameRegistrar.write.createSubname([PARENT, 'team'], {
     account: alice,
   })
-  await f.controller.write.topUpEditCredits([SUB, 5n], { account: registrar })
   return f
 }
 const load = () => connection.networkHelpers.loadFixture(fixture)
@@ -92,7 +91,6 @@ describe('relayed edits reach subnames', () => {
     expect(await resolver.read.text([SUB, 'simplex.contact'])).toBe(
       'https://smp/team',
     )
-    expect(await resolver.read.editCredits([SUB])).toBe(4n)
   })
 
   it('a non-holder signature does not', async () => {

@@ -65,7 +65,6 @@ describe('EIP-712 domains', () => {
       a.subnameRegistrar.address,
       a.controller.address,
       '0x0000000000000000000000000000000000000000',
-      a.controller.address,
     ])
     expect(await b.read.DOMAIN_SEPARATOR()).not.toBe(
       await a.resolver.read.DOMAIN_SEPARATOR(),
