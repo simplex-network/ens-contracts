@@ -136,6 +136,10 @@ async function fixture() {
     })
 
   await baseRegistrar.write.addController([controller.address])
+  // The payable path is gated by the public sales switch, which ships closed.
+  await controller.write.setPublicSalesOpen([true], {
+    account: ownerAccount,
+  })
   await reverseRegistrar.write.setController([controller.address, true])
   await defaultReverseRegistrar.write.setController([
     controller.address,
@@ -332,7 +336,7 @@ describe('SimplexController', () => {
         controller.write.addReservedNames([['simplex']], {
           account: registrantAccount,
         }),
-      ).toBeRevertedWithString('Ownable: caller is not the owner')
+      ).toBeRevertedWithCustomError('NotOwnerOrBeneficiary')
     })
 
     it('reserves and unreserves many names in a single transaction', async () => {
@@ -519,6 +523,9 @@ describe('SimplexController', () => {
       })
 
       await baseRegistrar.write.addController([controller.address])
+      await controller.write.setPublicSalesOpen([true], {
+        account: ownerAccount,
+      })
       await reverseRegistrar.write.setController([controller.address, true])
       await defaultReverseRegistrar.write.setController([
         controller.address,
@@ -680,11 +687,11 @@ describe('SimplexController', () => {
   })
 
   describe('Refund / withdraw to smart-contract receiver (M-1)', () => {
-    it('withdraw succeeds when owner is a contract with a non-trivial fallback', async () => {
+    it('withdraw succeeds when the beneficiary is a contract with a non-trivial fallback', async () => {
       const { controller, baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
         await loadFixture()
 
-      // Build a fresh proxy whose owner is a contract whose receive()
+      // Build a fresh proxy whose beneficiary is a contract whose receive()
       // does an SSTORE (>2300 gas). The earlier `.transfer()` would
       // have reverted; the `.call{value:}` form must succeed.
       const gasHog = await connection.viem.deployContract('GasHogReceiver', [])
@@ -703,7 +710,10 @@ describe('SimplexController', () => {
           smpxNft: mockNft.address,
           nftGateEnabled: true,
         },
-        ownerAddress: gasHog.address,
+        ownerAddress: ownerAccount.address,
+      })
+      await gasHogOwnedController.write.setBeneficiary([gasHog.address], {
+        account: ownerAccount,
       })
 
       // Seed the controller with some balance; anyone may trigger withdraw.
@@ -905,7 +915,7 @@ describe('SimplexController', () => {
     })
   })
 
-  describe('Price oracle admin (setPriceOracle / freezePriceOracle)', () => {
+  describe('Price oracle admin (setPriceOracle)', () => {
     it('owner can swap the price oracle', async () => {
       const { controller, dummyOracle } = await loadFixture()
       // Deploy a second oracle (different prices) to swap to.
@@ -941,42 +951,6 @@ describe('SimplexController', () => {
           account: ownerAccount,
         }),
       ).toBeRevertedWithCustomError('ZeroAddress')
-    })
-
-    it('owner can freeze the price oracle (one-way)', async () => {
-      const { controller } = await loadFixture()
-      expect(await controller.read.priceOracleFrozen()).toBe(false)
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      expect(await controller.read.priceOracleFrozen()).toBe(true)
-    })
-
-    it('rejects non-owner freezePriceOracle', async () => {
-      const { controller } = await loadFixture()
-      await expect(
-        controller.write.freezePriceOracle([], { account: registrantAccount }),
-      ).toBeRevertedWithString('Ownable: caller is not the owner')
-    })
-
-    it('setPriceOracle reverts after freeze', async () => {
-      const { controller, dummyOracle } = await loadFixture()
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      const newStable = await connection.viem.deployContract(
-        'StablePriceOracle',
-        [dummyOracle.address, [0n, 0n, 0n, 0n, 0n]],
-      )
-      await expect(
-        controller.write.setPriceOracle([newStable.address], {
-          account: ownerAccount,
-        }),
-      ).toBeRevertedWithCustomError('PriceOracleAlreadyFrozen')
-    })
-
-    it('double-freeze reverts', async () => {
-      const { controller } = await loadFixture()
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      await expect(
-        controller.write.freezePriceOracle([], { account: ownerAccount }),
-      ).toBeRevertedWithCustomError('PriceOracleAlreadyFrozen')
     })
 
     it('registration uses the new oracle after a swap', async () => {
@@ -1379,6 +1353,9 @@ describe('SimplexController', () => {
 
     it('withdraw succeeds with a zero balance', async () => {
       const { controller } = await loadFixture()
+      await controller.write.setBeneficiary([ownerAccount.address], {
+        account: ownerAccount,
+      })
       expect(await publicClient.getBalance({ address: controller.address })).toBe(0n)
       await controller.write.withdraw({ account: ownerAccount })
       expect(await publicClient.getBalance({ address: controller.address })).toBe(0n)
@@ -1514,12 +1491,15 @@ describe('SimplexController', () => {
       ).toBeRevertedWithString('Ownable: caller is not the owner')
     })
 
-    it('withdraw reverts TransferFailed when the owner rejects ETH', async () => {
+    it('withdraw reverts TransferFailed when the beneficiary rejects ETH', async () => {
       const f = await loadFixture()
       const rejecter = await connection.viem.deployContract('RejectEther', [])
       const { controller } = await deploySimplexControllerProxy({
         ...depsFrom(f),
-        ownerAddress: rejecter.address,
+        ownerAddress: ownerAccount.address,
+      })
+      await controller.write.setBeneficiary([rejecter.address], {
+        account: ownerAccount,
       })
       await testClient.setBalance({
         address: controller.address,

@@ -3,6 +3,7 @@ pragma solidity ~0.8.26;
 
 import {ENS} from "../registry/ENS.sol";
 import {ISubnameRegistrar} from "./ISubnameRegistrar.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 
 /// @notice Creates, owns, and resolves subnames so they are *soulbound to the
 ///         2LD NFT*. A subname has no independent owner: in the registry it is
@@ -52,6 +53,9 @@ contract SubnameRegistrar is ISubnameRegistrar {
     uint256 public constant MAX_LABEL_LENGTH = 63;
 
     error NotParentOwner();
+    error SignatureExpired();
+    error InvalidNonce();
+    error InvalidSignature();
     error LabelTooLong(uint256 length, uint256 max);
     error NotBaseRegistrar();
     error AlreadyInitialised();
@@ -64,6 +68,28 @@ contract SubnameRegistrar is ISubnameRegistrar {
     );
     event SubnameDeleted(bytes32 indexed parentNode, bytes32 indexed node);
     event GenerationBumped(bytes32 indexed node, uint256 generation);
+
+    /// SNRC: signed subname management, so a user with no ETH can create and
+    /// delete subnames. Pairs with ENSRegistry.setApprovalForAllWithSig, which is
+    /// how the same user grants this contract registry authority in the first
+    /// place. Both are needed: one authorises the caller, the other the write.
+    bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
+        keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+    bytes32 private constant _EIP712_NAME = keccak256("SimplexSubnames");
+    bytes32 private constant _EIP712_VERSION = keccak256("1");
+    bytes32 public constant CREATE_SUBNAME_TYPEHASH =
+        keccak256(
+            "CreateSubname(bytes32 parentNode,string label,uint256 nonce,uint256 deadline)"
+        );
+    bytes32 public constant DELETE_SUBNAME_TYPEHASH =
+        keccak256(
+            "DeleteSubname(bytes32 parentNode,string label,uint256 nonce,uint256 deadline)"
+        );
+
+    /// @dev One counter per signer, consumed in order.
+    mapping(address => uint256) public nonces;
 
     constructor(ENS _ens, address _baseRegistrar) {
         ens = _ens;
@@ -122,9 +148,36 @@ contract SubnameRegistrar is ISubnameRegistrar {
         bytes32 parentNode,
         string calldata label
     ) external returns (bytes32 node) {
+        if (_controller(parentNode) != msg.sender) revert NotParentOwner();
+        return _createSubname(parentNode, label);
+    }
+
+    /// @notice `createSubname` authorised by the parent owner's signature rather
+    ///         than by the caller, so a relayer can pay the gas.
+    function createSubnameWithSig(
+        bytes32 parentNode,
+        string calldata label,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata sig
+    ) external returns (bytes32 node) {
+        _consumeIntent(
+            CREATE_SUBNAME_TYPEHASH,
+            parentNode,
+            label,
+            nonce,
+            deadline,
+            sig
+        );
+        return _createSubname(parentNode, label);
+    }
+
+    function _createSubname(
+        bytes32 parentNode,
+        string calldata label
+    ) internal returns (bytes32 node) {
         if (bytes(label).length > MAX_LABEL_LENGTH)
             revert LabelTooLong(bytes(label).length, MAX_LABEL_LENGTH);
-        if (_controller(parentNode) != msg.sender) revert NotParentOwner();
         bytes32 labelhash = keccak256(bytes(label));
         node = keccak256(abi.encodePacked(parentNode, labelhash));
 
@@ -146,9 +199,83 @@ contract SubnameRegistrar is ISubnameRegistrar {
     ///         effective owner of the parent.
     function deleteSubname(bytes32 parentNode, string calldata label) external {
         if (_controller(parentNode) != msg.sender) revert NotParentOwner();
+        _deleteSubname(parentNode, label);
+    }
+
+    /// @notice `deleteSubname` authorised by the parent owner's signature.
+    function deleteSubnameWithSig(
+        bytes32 parentNode,
+        string calldata label,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata sig
+    ) external {
+        _consumeIntent(
+            DELETE_SUBNAME_TYPEHASH,
+            parentNode,
+            label,
+            nonce,
+            deadline,
+            sig
+        );
+        _deleteSubname(parentNode, label);
+    }
+
+    function _deleteSubname(
+        bytes32 parentNode,
+        string calldata label
+    ) internal {
         bytes32 labelhash = keccak256(bytes(label));
         bytes32 node = keccak256(abi.encodePacked(parentNode, labelhash));
         _clear(parentNode, node, labelhash);
+    }
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    _EIP712_DOMAIN_TYPEHASH,
+                    _EIP712_NAME,
+                    _EIP712_VERSION,
+                    block.chainid,
+                    address(this)
+                )
+            );
+    }
+
+    /// @dev Verify the parent owner's signature, then spend the nonce.
+    function _consumeIntent(
+        bytes32 typehash,
+        bytes32 parentNode,
+        string calldata label,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata sig
+    ) internal {
+        if (block.timestamp > deadline) revert SignatureExpired();
+        address owner = _controller(parentNode);
+        if (owner == address(0)) revert NotParentOwner();
+        if (nonce != nonces[owner]) revert InvalidNonce();
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR(),
+                keccak256(
+                    abi.encode(
+                        typehash,
+                        parentNode,
+                        keccak256(bytes(label)),
+                        nonce,
+                        deadline
+                    )
+                )
+            )
+        );
+        if (!SignatureChecker.isValidSignatureNow(owner, digest, sig))
+            revert InvalidSignature();
+        unchecked {
+            nonces[owner] = nonce + 1;
+        }
     }
 
     /// @notice Permissionless garbage collection: delete generation-dead subnames

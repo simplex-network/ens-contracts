@@ -24,6 +24,8 @@ contract SimplexResolver is PublicResolver {
         keccak256(
             "SetText(bytes32 node,string key,string value,uint256 nonce,uint256 deadline)"
         );
+    bytes32 public constant CLEAR_RECORDS_TYPEHASH =
+        keccak256("ClearRecords(bytes32 node,uint256 nonce,uint256 deadline)");
 
     /// @dev The controller may grant credits. Set once at deployment.
     address public immutable trustedController;
@@ -91,60 +93,79 @@ contract SimplexResolver is PublicResolver {
         uint256 deadline,
         bytes calldata sig
     ) external {
-        _authorizeRelayed(node, key, value, nonce, deadline, sig);
+        _consumeIntent(
+            node,
+            keccak256(
+                abi.encode(
+                    SET_TEXT_TYPEHASH,
+                    node,
+                    keccak256(bytes(key)),
+                    keccak256(bytes(value)),
+                    nonce,
+                    deadline
+                )
+            ),
+            nonce,
+            deadline,
+            sig
+        );
         versionable_texts[recordVersions[node]][node][key] = value;
         emit TextChanged(node, key, key, value);
     }
 
-    function _authorizeRelayed(
+    /// @notice Retire every record on `node` in one constant-gas write, on behalf
+    ///         of its owner. What a gifted name inherited from its sender is
+    ///         cleared for one credit rather than one credit per stale key.
+    function clearRecordsWithSig(
         bytes32 node,
-        string calldata key,
-        string calldata value,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata sig
+    ) external {
+        _consumeIntent(
+            node,
+            keccak256(
+                abi.encode(CLEAR_RECORDS_TYPEHASH, node, nonce, deadline)
+            ),
+            nonce,
+            deadline,
+            sig
+        );
+        uint64 version = recordVersions[node] + 1;
+        recordVersions[node] = version;
+        emit VersionChanged(node, version);
+    }
+
+    /// @dev The address whose signature authorises `node`. Mirrors
+    ///      `PublicResolver.isAuthorised`: a subname's registry owner is the
+    ///      SubnameRegistrar, and its effective owner is the 2LD holder behind it.
+    function relayedSigner(bytes32 node) public view returns (address owner) {
+        owner = ens.owner(node);
+        if (owner == address(nameWrapper))
+            owner = nameWrapper.ownerOf(uint256(node));
+    }
+
+    /// @dev Verify a signed intent, then spend the nonce and one edit credit.
+    function _consumeIntent(
+        bytes32 node,
+        bytes32 structHash,
         uint256 nonce,
         uint256 deadline,
         bytes calldata sig
     ) internal {
         if (block.timestamp > deadline) revert SignatureExpired();
-        address owner = ens.owner(node);
+        address owner = relayedSigner(node);
         if (nonce != nonces[owner]) revert InvalidNonce();
-        if (
-            !SignatureChecker.isValidSignatureNow(
-                owner,
-                _setTextDigest(node, key, value, nonce, deadline),
-                sig
-            )
-        ) revert InvalidSignature();
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
+        );
+        if (!SignatureChecker.isValidSignatureNow(owner, digest, sig))
+            revert InvalidSignature();
         uint256 credits = editCredits[node];
         if (credits == 0) revert NoEditCredits();
         unchecked {
             editCredits[node] = credits - 1;
             nonces[owner] = nonce + 1;
         }
-    }
-
-    function _setTextDigest(
-        bytes32 node,
-        string calldata key,
-        string calldata value,
-        uint256 nonce,
-        uint256 deadline
-    ) internal view returns (bytes32) {
-        return
-            keccak256(
-                abi.encodePacked(
-                    "\x19\x01",
-                    DOMAIN_SEPARATOR(),
-                    keccak256(
-                        abi.encode(
-                            SET_TEXT_TYPEHASH,
-                            node,
-                            keccak256(bytes(key)),
-                            keccak256(bytes(value)),
-                            nonce,
-                            deadline
-                        )
-                    )
-                )
-            );
     }
 }

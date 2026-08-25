@@ -17,6 +17,12 @@ import {IReverseRegistrar} from "../reverseRegistrar/IReverseRegistrar.sol";
 import {IDefaultReverseRegistrar} from "../reverseRegistrar/IDefaultReverseRegistrar.sol";
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
 
+/// @dev The subset of SimplexResolver the controller calls. Declared here so the
+///      controller does not import the resolver and pull in PublicResolver.
+interface IEditCredits {
+    function grantEditCredits(bytes32 node, uint256 amount) external;
+}
+
 /// @dev Fork of ETHRegistrarController with additional access controls:
 ///      - Minimum name length gate (admin can lower monotonically)
 ///      - Reserved names (admin-managed blocklist)
@@ -37,6 +43,9 @@ contract SimplexController is
     uint8 constant REVERSE_RECORD_ETHEREUM_BIT = 1;
     uint8 constant REVERSE_RECORD_DEFAULT_BIT = 2;
     uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
+    /// @dev Relayed record writes granted per year of registration or renewal.
+    uint256 public constant EDIT_CREDITS_PER_YEAR = 10;
+    uint256 private constant SECONDS_PER_YEAR = 365 days;
     uint64 private constant MAX_EXPIRY = type(uint64).max;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
@@ -67,7 +76,11 @@ contract SimplexController is
     mapping(bytes32 => bool) public reservedNames;
     IERC721 public smpxNft;
     bool public nftGateEnabled;
-    bool public priceOracleFrozen;
+    // Was `priceOracleFrozen`. `freezePriceOracle` is gone: the Chainlink feed is
+    // immutable inside the oracle, so a frozen oracle whose feed is retired would
+    // break registration and renewal permanently. The slot is kept so the layout
+    // does not shift.
+    bool private _unusedPriceOracleFrozen;
 
     error CommitmentNotFound(bytes32 commitment);
     error CommitmentTooNew(bytes32 commitment, uint256 minimumCommitmentTimestamp, uint256 currentTimestamp);
@@ -95,8 +108,15 @@ contract SimplexController is
     error NftRequired();
     error MinCharLengthCanOnlyDecrease();
     error NftGateCanOnlyBeDisabled();
-    error PriceOracleAlreadyFrozen();
     error ZeroAddress();
+    error NotBeneficiary();
+    error NotOwnerOrBeneficiary();
+    error BeneficiaryAlreadySet();
+    error NoRegistrarCredits();
+    error AlreadyFrozen();
+    error Frozen();
+    error PublicSalesClosed();
+    error NoDefaultResolver();
 
     event NameRegistered(
         string label,
@@ -121,7 +141,13 @@ contract SimplexController is
     event ReservedNameRemoved(string name);
     event NftGateDisabled();
     event PriceOracleChanged(IPriceOracle indexed newOracle);
-    event PriceOracleFrozen();
+    event BeneficiaryChanged(address indexed beneficiary);
+    event RegistrarCreditsSet(address indexed registrar, uint256 credits);
+    event RegistrarCreditSpent(address indexed registrar, uint256 remaining);
+    event DefaultResolverChanged(address indexed resolver);
+    event PublicSalesOpenChanged(bool open);
+    event ContractFrozen();
+    event EditCreditsToppedUp(bytes32 indexed node, uint256 amount);
 
     error ReentrantCall();
 
@@ -130,6 +156,21 @@ contract SimplexController is
     ///      re-run on upgrade) reads as not-entered, so the guard is correct
     ///      without a reinitializer; `initialize` seeds it to `_NOT_ENTERED`
     ///      for fresh deploys to get the cheaper steady-state cost.
+    /// @dev The guardian key. Permanent once set: the owner cannot take it back.
+    modifier onlyBeneficiary() {
+        if (msg.sender != beneficiary) revert NotBeneficiary();
+        _;
+    }
+
+    /// @dev Restrictive actions are held by the owner and the guardian both, so
+    ///      they can be taken immediately rather than waiting on the owner's
+    ///      timelock. See docs/plans/names-v2-launch-to-freeze-plan.md.
+    modifier onlyOwnerOrBeneficiary() {
+        if (msg.sender != owner() && msg.sender != beneficiary)
+            revert NotOwnerOrBeneficiary();
+        _;
+    }
+
     modifier nonReentrant() {
         if (_reentrancyStatus == _ENTERED) revert ReentrantCall();
         _reentrancyStatus = _ENTERED;
@@ -181,7 +222,9 @@ contract SimplexController is
         }
     }
 
-    function _authorizeUpgrade(address) internal override onlyOwner {}
+    function _authorizeUpgrade(address) internal view override onlyOwner {
+        if (frozen) revert Frozen();
+    }
 
     /// @notice Recover ERC20 tokens sent to this contract by mistake.
     function recoverFunds(
@@ -190,6 +233,57 @@ contract SimplexController is
         uint256 _amount
     ) external onlyOwner {
         IERC20(_token).transfer(_to, _amount);
+    }
+
+    // --- names v2: governance ---
+
+    /// @notice Set the guardian key. Callable by the owner while unset, and by the
+    ///         beneficiary itself afterwards, so the owner cannot take it back.
+    function setBeneficiary(address newBeneficiary) external {
+        if (newBeneficiary == address(0)) revert ZeroAddress();
+        if (beneficiary == address(0)) {
+            if (msg.sender != owner()) revert NotBeneficiary();
+        } else if (msg.sender != beneficiary) {
+            revert NotBeneficiary();
+        }
+        beneficiary = newBeneficiary;
+        emit BeneficiaryChanged(newBeneficiary);
+    }
+
+    /// @notice Replace a registrar's sponsored-operation allowance. Set, not add:
+    ///         zeroing it is the kill switch for a compromised registrar and must
+    ///         take one transaction.
+    function setRegistrarCredits(
+        address registrar,
+        uint256 credits
+    ) external onlyBeneficiary {
+        registrarCredits[registrar] = credits;
+        emit RegistrarCreditsSet(registrar, credits);
+    }
+
+    /// @notice The resolver new registrations point at. Only registrations against
+    ///         this resolver are granted edit credits.
+    function setDefaultResolver(address resolver) external onlyOwner {
+        defaultResolver = resolver;
+        emit DefaultResolverChanged(resolver);
+    }
+
+    /// @notice Open or close the payable registration path. Two-way until `freeze`,
+    ///         so it is also the pause switch. Held by the guardian as well as the
+    ///         owner because an exploit in the payable path accrues harm per block.
+    function setPublicSalesOpen(bool open) external onlyOwnerOrBeneficiary {
+        if (frozen) revert Frozen();
+        publicSalesOpen = open;
+        emit PublicSalesOpenChanged(open);
+    }
+
+    /// @notice One-way. Makes the implementation permanent and locks the sales
+    ///         switch in its current position. Everything else the owner can do
+    ///         survives, including `setPriceOracle` and the reserved-name setters.
+    function freeze() external onlyOwner {
+        if (frozen) revert AlreadyFrozen();
+        frozen = true;
+        emit ContractFrozen();
     }
 
     // --- Simplex admin functions ---
@@ -203,7 +297,9 @@ contract SimplexController is
     /// @notice Reserve any number of names in a single transaction. Pass a
     ///         single-element array to reserve one. Each addition emits a
     ///         `ReservedNameAdded` event so indexers see them individually.
-    function addReservedNames(string[] calldata names) external onlyOwner {
+    function addReservedNames(
+        string[] calldata names
+    ) external onlyOwnerOrBeneficiary {
         for (uint256 i = 0; i < names.length; ++i) {
             reservedNames[keccak256(bytes(names[i]))] = true;
             emit ReservedNameAdded(names[i]);
@@ -219,6 +315,11 @@ contract SimplexController is
         }
     }
 
+    /// @notice Hand a reserved name to its brand. Sets the default resolver on
+    ///         the node and grants edit credits, so the name resolves immediately
+    ///         and the brand's later record edits can be relayed — a brand never
+    ///         has to hold ETH. `setSubnodeOwner` alone sets an owner but not a
+    ///         resolver, so without this the name would not resolve at all.
     function registerReserved(
         string calldata label,
         address owner,
@@ -227,7 +328,18 @@ contract SimplexController is
         bytes32 labelhash = keccak256(bytes(label));
         if (!reservedNames[labelhash]) revert NameNotReserved(label);
         if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
-        base.registerWithLabel(label, owner, duration);
+
+        address resolver = defaultResolver;
+        if (resolver == address(0)) {
+            base.registerWithLabel(label, owner, duration);
+            return;
+        }
+
+        base.registerWithLabel(label, address(this), duration);
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+        ens.setRecord(namehash, owner, resolver, 0);
+        base.transferFrom(address(this), owner, uint256(labelhash));
+        _grantEditCredits(namehash, resolver, duration);
     }
 
     function disableNftGate() external onlyOwner {
@@ -236,22 +348,13 @@ contract SimplexController is
         emit NftGateDisabled();
     }
 
-    /// @notice Swap the active price oracle. Reverts after `freezePriceOracle`
-    ///         has been called so the contract can graduate to immutable
-    ///         pricing without a full UUPS upgrade.
+    /// @notice Swap the active price oracle. Survives `freeze`, and must: the
+    ///         Chainlink feed is immutable inside the oracle, so a retired feed
+    ///         would otherwise end registration and renewal permanently.
     function setPriceOracle(IPriceOracle newOracle) external onlyOwner {
-        if (priceOracleFrozen) revert PriceOracleAlreadyFrozen();
         if (address(newOracle) == address(0)) revert ZeroAddress();
         prices = newOracle;
         emit PriceOracleChanged(newOracle);
-    }
-
-    /// @notice One-way: permanently disables `setPriceOracle`. Matches the
-    ///         renounce-later pattern used for the NFT gate.
-    function freezePriceOracle() external onlyOwner {
-        if (priceOracleFrozen) revert PriceOracleAlreadyFrozen();
-        priceOracleFrozen = true;
-        emit PriceOracleFrozen();
     }
 
     // --- ENS controller functions (unchanged logic, added gates) ---
@@ -297,19 +400,72 @@ contract SimplexController is
         commitments[commitment] = block.timestamp;
     }
 
-    function _checkSimplexGates(string calldata label) internal view {
+    /// @param checkNft Skipped on the credited path, where `msg.sender` is the
+    ///        registrar rather than the buyer.
+    function _checkSimplexGates(
+        string calldata label,
+        bool checkNft
+    ) internal view {
         if (label.strlen() < minCharLength)
             revert NameTooShort(label, minCharLength);
         if (reservedNames[keccak256(bytes(label))])
             revert NameReserved(label);
-        if (nftGateEnabled && smpxNft.balanceOf(msg.sender) == 0)
+        if (checkNft && nftGateEnabled && smpxNft.balanceOf(msg.sender) == 0)
             revert NftRequired();
     }
 
+    /// @dev Spend one sponsored operation from the caller's allowance. The
+    ///      beneficiary can zero the allowance in one transaction, which is the
+    ///      kill switch for a compromised registrar.
+    function _spendRegistrarCredit() private {
+        uint256 credits = registrarCredits[msg.sender];
+        if (credits == 0) revert NoRegistrarCredits();
+        unchecked {
+            credits -= 1;
+        }
+        registrarCredits[msg.sender] = credits;
+        emit RegistrarCreditSpent(msg.sender, credits);
+    }
+
+    /// @dev Grant relayed-write allowance for `node`, but only when the name
+    ///      actually uses the default resolver — credits live in the resolver, so
+    ///      granting them anywhere else would be a no-op the user could not spend.
+    function _grantEditCredits(
+        bytes32 node,
+        address resolverInUse,
+        uint256 duration
+    ) private {
+        address target = defaultResolver;
+        if (target == address(0) || resolverInUse != target) return;
+        uint256 yearsBought = duration / SECONDS_PER_YEAR;
+        if (yearsBought == 0) yearsBought = 1;
+        IEditCredits(target).grantEditCredits(
+            node,
+            EDIT_CREDITS_PER_YEAR * yearsBought
+        );
+    }
+
+    /// @notice Buy relayed-write allowance for an existing name. Spends one
+    ///         registrar credit, so the same allowance and the same kill switch
+    ///         cover it.
+    function topUpEditCredits(
+        bytes32 node,
+        uint256 amount
+    ) external nonReentrant {
+        _spendRegistrarCredit();
+        address target = defaultResolver;
+        if (target == address(0)) revert NoDefaultResolver();
+        IEditCredits(target).grantEditCredits(node, amount);
+        emit EditCreditsToppedUp(node, amount);
+    }
+
+    /// @notice Register and pay. Gated by the public sales switch; the credited
+    ///         and reserved paths are not.
     function register(
         Registration calldata registration
     ) public payable override nonReentrant {
-        _checkSimplexGates(registration.label);
+        if (!publicSalesOpen) revert PublicSalesClosed();
+        _checkSimplexGates(registration.label, true);
 
         bytes32 labelhash = keccak256(bytes(registration.label));
         IPriceOracle.Price memory price = _rentPrice(
@@ -320,6 +476,40 @@ contract SimplexController is
         uint256 totalPrice = price.base + price.premium;
         if (msg.value < totalPrice) revert InsufficientValue();
 
+        _registerCore(registration, labelhash, price);
+
+        if (msg.value > totalPrice) {
+            (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
+            if (!ok) revert TransferFailed();
+        }
+    }
+
+    /// @notice Register with no value attached, spending one registrar credit.
+    ///         The fee would have gone to the controller and been withdrawn back
+    ///         to the same treasury, so it is removed rather than performed.
+    function registerWithCredit(
+        Registration calldata registration
+    ) external nonReentrant {
+        _spendRegistrarCredit();
+        _checkSimplexGates(registration.label, false);
+
+        bytes32 labelhash = keccak256(bytes(registration.label));
+        IPriceOracle.Price memory price = _rentPrice(
+            registration.label,
+            labelhash,
+            registration.duration
+        );
+
+        _registerCore(registration, labelhash, price);
+    }
+
+    /// @dev Everything both registration paths share: availability, the
+    ///      commit/reveal window, the mint, records, and the edit-credit grant.
+    function _registerCore(
+        Registration calldata registration,
+        bytes32 labelhash,
+        IPriceOracle.Price memory price
+    ) private returns (uint256 expires) {
         if (!_available(registration.label, labelhash))
             revert NameNotAvailable(registration.label);
 
@@ -344,7 +534,7 @@ contract SimplexController is
 
         delete (commitments[commitment]);
 
-        uint256 expires;
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
 
         if (registration.resolver == address(0)) {
             expires = base.registerWithLabel(
@@ -359,7 +549,6 @@ contract SimplexController is
                 registration.duration
             );
 
-            bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
             ens.setRecord(
                 namehash,
                 registration.owner,
@@ -392,6 +581,12 @@ contract SimplexController is
                 );
         }
 
+        _grantEditCredits(
+            namehash,
+            registration.resolver,
+            registration.duration
+        );
+
         emit NameRegistered(
             registration.label,
             labelhash,
@@ -401,11 +596,6 @@ contract SimplexController is
             expires,
             registration.referrer
         );
-
-        if (msg.value > totalPrice) {
-            (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
-            if (!ok) revert TransferFailed();
-        }
     }
 
     function renew(
@@ -418,9 +608,7 @@ contract SimplexController is
         IPriceOracle.Price memory price = _rentPrice(label, labelhash, duration);
         if (msg.value < price.base) revert InsufficientValue();
 
-        uint256 expires = base.renew(uint256(labelhash), duration);
-
-        emit NameRenewed(label, labelhash, price.base, expires, referrer);
+        _renewCore(label, labelhash, duration, price.base, referrer);
 
         if (msg.value > price.base) {
             (bool ok, ) = payable(msg.sender).call{value: msg.value - price.base}("");
@@ -428,8 +616,38 @@ contract SimplexController is
         }
     }
 
+    /// @notice Renew with no value attached, spending one registrar credit.
+    function renewWithCredit(
+        string calldata label,
+        uint256 duration,
+        bytes32 referrer
+    ) external nonReentrant {
+        _spendRegistrarCredit();
+        bytes32 labelhash = keccak256(bytes(label));
+        _renewCore(label, labelhash, duration, 0, referrer);
+    }
+
+    function _renewCore(
+        string calldata label,
+        bytes32 labelhash,
+        uint256 duration,
+        uint256 cost,
+        bytes32 referrer
+    ) private returns (uint256 expires) {
+        expires = base.renew(uint256(labelhash), duration);
+
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+        _grantEditCredits(namehash, ens.resolver(namehash), duration);
+
+        emit NameRenewed(label, labelhash, cost, expires, referrer);
+    }
+
+    /// @notice Pays the beneficiary, never `owner()`, so revenue is independent of
+    ///         the admin key. Permissionless to call.
     function withdraw() public nonReentrant {
-        (bool ok, ) = payable(owner()).call{value: address(this).balance}("");
+        address payee = beneficiary;
+        if (payee == address(0)) revert ZeroAddress();
+        (bool ok, ) = payable(payee).call{value: address(this).balance}("");
         if (!ok) revert TransferFailed();
     }
 
@@ -471,5 +689,20 @@ contract SimplexController is
     // new state variables land here.
     // 49 -> 48 when `_reentrancyStatus` was added (reentrancy guard).
     uint256 private _reentrancyStatus;
-    uint256[48] private __gap;
+
+    // --- names v2: governance and credits. 48 -> 45. ---
+    // Slot 1: beneficiary + frozen pack together.
+    /// @dev Guardian key: registrar credits, the sales switch, and `withdraw`'s payee.
+    address public beneficiary;
+    /// @dev One-way. Blocks upgrades and the sales switch; nothing else.
+    bool public frozen;
+    /// @dev Sponsored registrations and renewals a registrar may still perform.
+    mapping(address => uint256) public registrarCredits;
+    // Slot 3: defaultResolver + publicSalesOpen pack together.
+    /// @dev The resolver new registrations point at, and the only one granted edit credits.
+    address public defaultResolver;
+    /// @dev Gates the payable path only. Credited and reserved registrations ignore it.
+    bool public publicSalesOpen;
+
+    uint256[45] private __gap;
 }
