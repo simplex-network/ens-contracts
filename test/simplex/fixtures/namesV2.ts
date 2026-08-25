@@ -207,6 +207,13 @@ export const eip712Types = {
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],
+  TransferName: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'tokenId', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ],
   DeleteSubname: [
     { name: 'parentNode', type: 'bytes32' },
     { name: 'label', type: 'string' },
@@ -221,7 +228,11 @@ export const FAR_FUTURE = 4102444800n
 export async function signIntent(
   publicClient: any,
   client: any,
-  domainName: 'SimplexResolver' | 'SimplexENSRegistry' | 'SimplexSubnames',
+  domainName:
+    | 'SimplexResolver'
+    | 'SimplexENSRegistry'
+    | 'SimplexSubnames'
+    | 'SimplexNames',
   verifyingContract: `0x${string}`,
   primaryType: keyof typeof eip712Types,
   message: Record<string, unknown>,

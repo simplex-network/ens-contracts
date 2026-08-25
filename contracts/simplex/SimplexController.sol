@@ -722,9 +722,9 @@ contract SimplexController is
     // 49 -> 48 when `_reentrancyStatus` was added (reentrancy guard).
     uint256 private _reentrancyStatus;
 
-    // --- names v2: governance and credits. 48 -> 45. ---
+    // --- names v2: governance, allowance and pricing. 48 -> 44. ---
     // Slot 1: beneficiary + frozen pack together.
-    /// @dev Guardian key: registrar credits, the sales switch, and `withdraw`'s payee.
+    /// @dev Guardian key: the registrar allowance, the sales switch, and `withdraw`'s payee.
     address public beneficiary;
     /// @dev One-way. Blocks upgrades and the sales switch; nothing else.
     bool public frozen;
