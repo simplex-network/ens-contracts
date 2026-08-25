@@ -18,11 +18,6 @@ export default deployScript(
     const priceOracle = get<
       (typeof artifacts.ExponentialPremiumPriceOracle)['abi']
     >('ExponentialPremiumPriceOracle')
-    const reverseRegistrar =
-      get<(typeof artifacts.ReverseRegistrar)['abi']>('ReverseRegistrar')
-    const defaultReverseRegistrar = get<
-      (typeof artifacts.DefaultReverseRegistrar)['abi']
-    >('DefaultReverseRegistrar')
 
     const tld = process.env.SIMPLEX_TLD || 'testing'
     const tldNode = namehash(tld)
@@ -50,8 +45,6 @@ export default deployScript(
         priceOracle.address,
         60n,
         86400n,
-        reverseRegistrar.address,
-        defaultReverseRegistrar.address,
         registry.address,
         {
           tldNode,
@@ -82,24 +75,6 @@ export default deployScript(
       args: [controllerAddress],
       account: owner,
     })
-
-    console.log(
-      `  - Adding SimplexController as controller on ReverseRegistrar`,
-    )
-    await write(reverseRegistrar, {
-      functionName: 'setController',
-      args: [controllerAddress, true],
-      account: owner,
-    })
-
-    console.log(
-      `  - Adding SimplexController as controller on DefaultReverseRegistrar`,
-    )
-    await write(defaultReverseRegistrar, {
-      functionName: 'setController',
-      args: [controllerAddress, true],
-      account: owner,
-    })
   },
   {
     id: 'SimplexController v2.0.0',
@@ -108,8 +83,6 @@ export default deployScript(
       'ENSRegistry',
       'BaseRegistrarImplementation',
       'ExponentialPremiumPriceOracle',
-      'ReverseRegistrar',
-      'DefaultReverseRegistrar',
     ],
   },
 )

@@ -25,6 +25,39 @@ const load = () => connection.networkHelpers.loadFixture(fixture)
  * sets an owner but not a resolver, so without the resolver path the name would
  * not resolve at all and the brand would need ETH to fix it.
  */
+describe('no reverse resolution', () => {
+  it('refuses any registration carrying a reverse bit, on both paths', async () => {
+    const { controller } = await load()
+    for (const bit of [1, 2, 3]) {
+      await expect(
+        controller.read.makeCommitment([
+          {
+            label: 'reversebit',
+            owner: brand.address,
+            duration: YEAR,
+            secret: `0x${'00'.repeat(32)}` as `0x${string}`,
+            resolver: zeroAddress,
+            data: [] as `0x${string}`[],
+            reverseRecord: bit,
+            referrer: `0x${'00'.repeat(32)}` as `0x${string}`,
+          },
+        ]),
+      ).toBeRevertedWithCustomError('ReverseRecordNotSupported')
+    }
+  })
+
+  it('the controller holds no reverse registrar at all', async () => {
+    const { controller } = await load()
+    // the storage slots and initializer arguments are gone, so there is nothing
+    // to read; this asserts the ABI no longer carries them
+    const names = (controller.abi as any[])
+      .filter((e) => e.type === 'function')
+      .map((e) => e.name)
+    expect(names).not.toContain('reverseRegistrar')
+    expect(names).not.toContain('defaultReverseRegistrar')
+  })
+})
+
 describe('registerReserved', () => {
   it('gives the brand the token, the registry node and a working resolver', async () => {
     const { controller, ens, baseRegistrar, resolver } = await load()

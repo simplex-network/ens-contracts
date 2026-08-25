@@ -102,6 +102,31 @@ describe('controller storage layout', () => {
     expect(BigInt(guard!)).toBe(1n) // _NOT_ENTERED
   })
 
+  it('the reverse-registrar slots are reserved, not removed', async () => {
+    const { controller, priceOracle } = await load()
+    const read = async (i: number) =>
+      ((await publicClient.getStorageAt({
+        address: controller.address,
+        slot: pad(toHex(i)),
+      })) ?? '0x').toLowerCase()
+
+    // Reverse resolution is gone, but its two slots are kept so nothing below
+    // them shifts and so the feature can be reintroduced without a migration.
+    // maxCommitmentAge is 86400 in the fixture; prices holds the oracle address.
+    const oracle = priceOracle.address.slice(2).toLowerCase()
+    let maxSlot = -1
+    let pricesSlot = -1
+    for (let i = 0; i < SCAN; i++) {
+      const w = await read(i)
+      if (maxSlot < 0 && BigInt(w) === 86400n) maxSlot = i
+      if (pricesSlot < 0 && w.endsWith(oracle)) pricesSlot = i
+    }
+    expect(maxSlot).toBeGreaterThan(-1)
+    expect(pricesSlot - maxSlot).toBe(3)
+    expect(BigInt(await read(maxSlot + 1))).toBe(0n)
+    expect(BigInt(await read(maxSlot + 2))).toBe(0n)
+  })
+
   it('the credits mapping is keyed from its own slot', async () => {
     const { controller } = await load()
     const before = await snapshot(controller.address)

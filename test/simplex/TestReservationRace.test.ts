@@ -35,8 +35,6 @@ async function fixture() {
       f.priceOracle.address,
       MIN_COMMITMENT_AGE,
       86400n,
-      zeroAddress,
-      zeroAddress,
       f.ens.address,
       {
         tldNode: (await import('viem')).namehash('simplex'),

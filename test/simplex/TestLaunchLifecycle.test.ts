@@ -119,22 +119,6 @@ describe('launch lifecycle', () => {
       ])
       renderer = await viem.deployContract('MetadataRenderer', [`.${TLD}`])
 
-      // the reverse registrar exists only so PublicResolver's ReverseClaimer
-      // constructor succeeds; it is never wired to the controller
-      const reverseRegistrar = await viem.deployContract('ReverseRegistrar', [
-        ens.address,
-      ])
-      await ens.write.setSubnodeOwner([
-        zeroHash,
-        labelhash('reverse'),
-        deployKey.address,
-      ])
-      await ens.write.setSubnodeOwner([
-        namehash('reverse'),
-        labelhash('addr'),
-        reverseRegistrar.address,
-      ])
-
       const implementation = await viem.deployContract('SimplexController', [])
       const initData = encodeFunctionData({
         abi: implementation.abi,
@@ -144,8 +128,6 @@ describe('launch lifecycle', () => {
           priceOracle.address,
           0n,
           86400n,
-          zeroAddress,
-          zeroAddress,
           ens.address,
           {
             tldNode: TLD_NODE,

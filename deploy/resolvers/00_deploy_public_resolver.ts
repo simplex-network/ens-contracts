@@ -1,5 +1,5 @@
 import { artifacts, deployScript } from '@rocketh'
-import { getAddress, namehash, zeroAddress, type Address } from 'viem'
+import { namehash, zeroAddress } from 'viem'
 
 export default deployScript(
   async ({ deploy, get, execute: write, read, namedAccounts, network }) => {
@@ -11,8 +11,6 @@ export default deployScript(
     const controller = get<(typeof artifacts.SimplexController)['abi']>(
       'SimplexController',
     )
-    const reverseRegistrar =
-      get<(typeof artifacts.ReverseRegistrar)['abi']>('ReverseRegistrar')
 
     // Deploy PublicResolver
     const publicResolver = await deploy('PublicResolver', {
@@ -22,7 +20,10 @@ export default deployScript(
         registry.address,
         zeroAddress, // wrapper-free v3: NameWrapper slot is address(0)
         controller.address,
-        reverseRegistrar.address,
+        // trustedReverseRegistrar: SNRC runs no reverse registrar, and this slot
+        // is a second permanently-trusted address with authority over every
+        // node, so it is deliberately inert.
+        zeroAddress,
       ],
     })
 
@@ -30,24 +31,6 @@ export default deployScript(
 
     // Only attempt to make controller etc changes directly on testnets
     if (network.name === 'mainnet' && !network.tags?.tenderly) return
-
-    // Check if PublicResolver is already the default resolver on ReverseRegistrar
-    const isReverseRegistrarDefaultResolver = await read(reverseRegistrar, {
-      functionName: 'defaultResolver',
-      args: [],
-    }).then(
-      (v) => getAddress(v as Address) === getAddress(publicResolver.address),
-    )
-    if (!isReverseRegistrarDefaultResolver) {
-      console.log(
-        `  - Setting PublicResolver as default resolver on ReverseRegistrar`,
-      )
-      await write(reverseRegistrar, {
-        functionName: 'setDefaultResolver',
-        args: [publicResolver.address],
-        account: owner,
-      })
-    }
 
     const resolverEthOwner = await read(registry, {
       functionName: 'owner',
@@ -80,7 +63,6 @@ export default deployScript(
     dependencies: [
       'ENSRegistry',
       'SimplexController',
-      'ReverseRegistrar',
     ],
   },
 )

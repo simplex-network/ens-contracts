@@ -65,19 +65,6 @@ export async function deployNamesV2(
   )
   await ens.write.setSubnodeOwner([zeroHash, labelhash(TLD), baseRegistrar.address])
 
-  // PublicResolver inherits ReverseClaimer, whose constructor calls the registrar
-  // at addr.reverse. It must exist before the resolver is deployed, even though
-  // this deployment passes address(0) for trustedReverseRegistrar and never uses it.
-  const reverseRegistrar = await viem.deployContract('ReverseRegistrar', [
-    ens.address,
-  ])
-  await ens.write.setSubnodeOwner([zeroHash, labelhash('reverse'), accounts.owner])
-  await ens.write.setSubnodeOwner([
-    namehash('reverse'),
-    labelhash('addr'),
-    reverseRegistrar.address,
-  ])
-
   // The real `.simplex` curve, in attoUSD per second: $1/yr at 5+ characters,
   // $32 at 4, $128 at 3. With the feed pinned to 1e8 below, 1 attoUSD is 1 wei,
   // so a one-year 6-character name costs ~0.9993 ETH in these tests.
@@ -96,8 +83,6 @@ export async function deployNamesV2(
       priceOracle.address,
       0n,
       86400n,
-      zeroAddress,
-      zeroAddress,
       ens.address,
       {
         tldNode: TLD_NODE,
@@ -123,7 +108,7 @@ export async function deployNamesV2(
     ens.address,
     subnameRegistrar.address, // wrapper slot: subname authorisation routes here
     controller.address, // trustedETHController
-    zeroAddress, // no reverse registrar
+    zeroAddress, // trustedReverseRegistrar: unused, and inert at address(0)
   ])
   await subnameRegistrar.write.setResolver([resolver.address])
 
@@ -145,7 +130,6 @@ export async function deployNamesV2(
     subnameRegistrar,
     priceOracle,
     dummyOracle,
-    reverseRegistrar,
   }
 }
 

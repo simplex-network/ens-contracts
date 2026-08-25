@@ -13,8 +13,6 @@ import {BaseRegistrarImplementation} from "../ethregistrar/BaseRegistrarImplemen
 import {StringUtils} from "../utils/StringUtils.sol";
 import {Resolver} from "../resolvers/Resolver.sol";
 import {ENS} from "../registry/ENS.sol";
-import {IReverseRegistrar} from "../reverseRegistrar/IReverseRegistrar.sol";
-import {IDefaultReverseRegistrar} from "../reverseRegistrar/IDefaultReverseRegistrar.sol";
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
 import {IPriceOracleUSD} from "../ethregistrar/IPriceOracleUSD.sol";
 
@@ -35,8 +33,6 @@ contract SimplexController is
 {
     using StringUtils for *;
 
-    uint8 constant REVERSE_RECORD_ETHEREUM_BIT = 1;
-    uint8 constant REVERSE_RECORD_DEFAULT_BIT = 2;
     uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
     uint64 private constant MAX_EXPIRY = type(uint64).max;
 
@@ -55,8 +51,13 @@ contract SimplexController is
     BaseRegistrarImplementation base;
     uint256 public minCommitmentAge;
     uint256 public maxCommitmentAge;
-    IReverseRegistrar public reverseRegistrar;
-    IDefaultReverseRegistrar public defaultReverseRegistrar;
+    // Were `reverseRegistrar` and `defaultReverseRegistrar`. SNRC runs no reverse
+    // resolution, so nothing writes them and the initializer no longer takes
+    // them. The two slots are kept rather than deleted: removing them would
+    // shift every variable below, and reserving them means reverse resolution
+    // can be reintroduced in an upgrade without a layout migration.
+    address private _unusedReverseRegistrar;
+    address private _unusedDefaultReverseRegistrar;
     IPriceOracleUSD public prices;
     bytes32 public tldNode;
     string public tldSuffix;
@@ -80,7 +81,7 @@ contract SimplexController is
     error NameNotAvailable(string name);
     error DurationTooShort(uint256 duration);
     error ResolverRequiredWhenDataSupplied();
-    error ResolverRequiredForReverseRecord();
+    error ReverseRecordNotSupported();
     error UnexpiredCommitmentExists(bytes32 commitment);
     error InsufficientValue();
     error TransferFailed();
@@ -103,7 +104,6 @@ contract SimplexController is
     error ZeroAddress();
     error NotBeneficiary();
     error NotOwnerOrBeneficiary();
-    error BeneficiaryAlreadySet();
     error InsufficientAllowance(uint256 required, uint256 available);
     error AlreadyFrozen();
     error Frozen();
@@ -182,8 +182,6 @@ contract SimplexController is
         IPriceOracleUSD _prices,
         uint256 _minCommitmentAge,
         uint256 _maxCommitmentAge,
-        IReverseRegistrar _reverseRegistrar,
-        IDefaultReverseRegistrar _defaultReverseRegistrar,
         ENS _ens,
         SimplexConfig memory _config,
         address _owner
@@ -203,8 +201,6 @@ contract SimplexController is
         prices = _prices;
         minCommitmentAge = _minCommitmentAge;
         maxCommitmentAge = _maxCommitmentAge;
-        reverseRegistrar = _reverseRegistrar;
-        defaultReverseRegistrar = _defaultReverseRegistrar;
         tldNode = _config.tldNode;
         tldSuffix = _config.tldSuffix;
         minCharLength = _config.minCharLength;
@@ -386,8 +382,11 @@ contract SimplexController is
         if (registration.data.length > 0 && registration.resolver == address(0))
             revert ResolverRequiredWhenDataSupplied();
 
-        if (registration.reverseRecord != 0 && registration.resolver == address(0))
-            revert ResolverRequiredForReverseRecord();
+        // `.simplex` runs no reverse registrar: nothing here resolves an address
+        // back to a name, so the upstream struct field is refused rather than
+        // silently dropped. Keeping the field keeps IETHRegistrarController's
+        // ABI intact for tooling that encodes against it.
+        if (registration.reverseRecord != 0) revert ReverseRecordNotSupported();
 
         if (registration.duration < MIN_REGISTRATION_DURATION)
             revert DurationTooShort(registration.duration);
@@ -462,9 +461,7 @@ contract SimplexController is
         uint256 totalPrice = price.base + price.premium;
         if (msg.value < totalPrice) revert InsufficientValue();
 
-        // upstream semantics on the payable path: the caller is the payer, and
-        // the reverse record is theirs
-        _registerCore(registration, labelhash, price, msg.sender);
+        _registerCore(registration, labelhash, price);
 
         if (msg.value > totalPrice) {
             (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
@@ -490,29 +487,15 @@ contract SimplexController is
         // and reading it would couple the sponsored flow to the ETH/USD feed,
         // which is the one dependency this path exists without. What was
         // actually consumed is in `RegistrarAllowanceSpent`, in attoUSD.
-        //
-        // The reverse record goes to the buyer, not to `msg.sender`: here the
-        // caller is the sponsoring registrar's hot wallet, so `msg.sender` would
-        // name the relayer instead of the person who receives the name — and
-        // every later sponsored registration would overwrite it.
-        _registerCore(
-            registration,
-            labelhash,
-            IPriceOracle.Price(0, 0),
-            registration.owner
-        );
+        _registerCore(registration, labelhash, IPriceOracle.Price(0, 0));
     }
 
     /// @dev Everything both registration paths share: availability, the
-    ///      commit/reveal window, the mint, records, and the edit-credit grant.
-    /// @param reverseFor The address whose reverse record the `reverseRecord`
-    ///        bits apply to. The payer on the payable path; the buyer on the
-    ///        sponsored one, where the payer is a shared service wallet.
+    ///      commit/reveal window, the mint and the records.
     function _registerCore(
         Registration calldata registration,
         bytes32 labelhash,
-        IPriceOracle.Price memory price,
-        address reverseFor
+        IPriceOracle.Price memory price
     ) private returns (uint256 expires) {
         if (!_available(registration.label, labelhash))
             revert NameNotAvailable(registration.label);
@@ -570,19 +553,6 @@ contract SimplexController is
                 registration.owner,
                 uint256(labelhash)
             );
-
-            if (registration.reverseRecord & REVERSE_RECORD_ETHEREUM_BIT != 0)
-                reverseRegistrar.setNameForAddr(
-                    reverseFor,
-                    reverseFor,
-                    registration.resolver,
-                    string.concat(registration.label, tldSuffix)
-                );
-            if (registration.reverseRecord & REVERSE_RECORD_DEFAULT_BIT != 0)
-                defaultReverseRegistrar.setNameForAddr(
-                    reverseFor,
-                    string.concat(registration.label, tldSuffix)
-                );
         }
 
         emit NameRegistered(

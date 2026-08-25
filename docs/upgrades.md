@@ -1,11 +1,15 @@
 # SimplexController upgrade & storage-layout invariants
 
-`SimplexController` is the only non-verbatim contract in the SNRC deployment and
-the only **upgradeable** one (ERC-1967 UUPS proxy; `_authorizeUpgrade` is
-`onlyOwner`). A UUPS upgrade swaps the implementation behind a proxy whose
-storage persists — so the new implementation **must keep the exact storage
-layout** of the old one, only appending. Get this wrong and existing values
-(prices, reserved names, the NFT gate, …) silently read from the wrong slots.
+`SimplexController` is the only **upgradeable** contract in the SNRC deployment
+(ERC-1967 UUPS proxy; `_authorizeUpgrade` is `onlyOwner`). A UUPS upgrade swaps
+the implementation behind a proxy whose storage persists — so the new
+implementation **must keep the exact storage layout** of the old one, only
+appending. Get this wrong and existing values (prices, reserved names, the
+registrar allowances, …) silently read from the wrong slots.
+
+Upgradeability is not permanent. `freeze()` is one-way and makes
+`_authorizeUpgrade` revert `Frozen`, which is what fixes the implementation at
+lockdown; everything in this document applies up to that point and not after.
 
 ## Storage model
 
@@ -16,15 +20,40 @@ contract SimplexController is
 
 Slots are laid out base-contracts-first. The OZ upgradeable parents
 (`Initializable`, `Ownable2Step`, `UUPS`) reserve their own slots and carry
-their own gaps — leave them alone. After them come this contract's variables
-(`ens`, `base`, `minCommitmentAge`, … `priceOracleFrozen`), followed by:
+their own gaps — leave them alone. In practice they occupy roughly 250 slots, so
+this contract's own variables start well past slot 250. After them come
+`ens`, `base`, `minCommitmentAge`, `maxCommitmentAge`, two reserved slots
+(below), `prices`, `tldNode`, `tldSuffix`, `commitments`, `minCharLength`,
+`reservedNames`, `smpxNft` + `nftGateEnabled` + `_unusedPriceOracleFrozen`
+(packed), `_reentrancyStatus`, then the names-v2 block:
 
 ```solidity
-uint256[49] private __gap;   // shrinks as state is added
+address public beneficiary;                        // packs with `frozen`
+bool    public frozen;
+mapping(address => uint256) public registrarAllowance;
+address public defaultResolver;                    // packs with `publicSalesOpen`
+bool    public publicSalesOpen;
+
+uint256[45] private __gap;   // shrinks as state is added
 ```
 
-`__gap` was `[50]`; it dropped to `[49]` when `priceOracleFrozen` landed. It is
-the budget for future state.
+`__gap` was `[50]`; `[49]` when `priceOracleFrozen` landed, `[48]` with
+`_reentrancyStatus`, and `[45]` with the three names-v2 slots. It is the budget
+for future state.
+
+**Reserved slots.** Two kinds of placeholder exist, and both are deliberate:
+
+- `_unusedPriceOracleFrozen` — was `priceOracleFrozen`, kept when
+  `freezePriceOracle` was removed. Pricing must stay changeable, because the
+  Chainlink feed is `immutable` inside the oracle and a retired feed would
+  otherwise end registration and renewal forever.
+- `_unusedReverseRegistrar`, `_unusedDefaultReverseRegistrar` — were the two
+  reverse-registrar references, kept when reverse resolution was removed.
+
+Neither is written by anything. They exist so removing a feature does not shift
+every slot below it, and so the feature can be reintroduced by re-typing the slot
+rather than migrating storage. **Removing a variable is not a substitute for
+reserving its slot** — see invariant 2.
 
 ## Invariants (do not break these)
 
@@ -44,11 +73,20 @@ the budget for future state.
 ### Adding a variable — example
 
 ```solidity
-   bool public priceOracleFrozen;     // last existing var
-+  address public treasuryV2;         // new var: takes 1 slot, declared here
--  uint256[49] private __gap;
-+  uint256[48] private __gap;         // shrink by 1
+   bool public publicSalesOpen;       // last existing var
++  address public somethingNew;       // new var: takes 1 slot, declared here
+-  uint256[45] private __gap;
++  uint256[44] private __gap;         // shrink by 1
 ```
+
+### Removing a variable — reserve, do not delete
+
+```solidity
+-  IReverseRegistrar public reverseRegistrar;
++  address private _unusedReverseRegistrar;   // slot reserved, nothing below moves
+```
+
+Same slot count, same slot size. `__gap` is untouched.
 
 ## Pre-upgrade checklist
 
@@ -59,11 +97,15 @@ the budget for future state.
       or diff layouts manually with `forge inspect SimplexController storage-layout`
       (old vs new) / Hardhat's `storageLayout` build output.
 - [ ] **Run the V2 upgrade test** (issue #9): deploy V1 behind a proxy, populate
-      state (reserved names, min char length, NFT gate, treasury, oracle),
-      upgrade to V2, and assert every V1 value survives unchanged and the new
-      behaviour works.
-- [ ] Confirm `_authorizeUpgrade` owner is the intended SNCC multisig before the
-      upgrade tx (upgrade authority can also be renounced to make the contract
-      immutable).
+      state (reserved names, min char length, NFT gate, oracle, beneficiary,
+      registrar allowances, the sales switch), upgrade to V2, and assert every V1
+      value survives unchanged and the new behaviour works.
+- [ ] **Run `test/simplex/TestControllerStorageLayout.test.ts`.** It reads raw
+      slots from a deployed proxy and asserts the packing and the reserved slots
+      directly, which catches a reorder the OZ plugin would also catch and a
+      deleted placeholder it would not.
+- [ ] Confirm `_authorizeUpgrade` owner is the intended admin timelock before the
+      upgrade tx, and that `frozen()` is still `false` — after `freeze()` there is
+      no upgrade path at all.
 - [ ] Bump the `__gap` size in the same commit as any new state variable, so the
       two never drift.

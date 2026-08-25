@@ -3,19 +3,19 @@ pragma solidity ^0.8.17;
 
 import {AbstractUniversalResolver, IGatewayProvider} from "./AbstractUniversalResolver.sol";
 import {RegistryUtils, ENS} from "./RegistryUtils.sol";
-import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
 
-contract UniversalResolver is AbstractUniversalResolver, ReverseClaimer {
+contract UniversalResolver is AbstractUniversalResolver {
     ENS public immutable registry;
 
+    /// @param owner Retained for constructor-ABI compatibility with upstream and
+    ///        with the deployment scripts. SNRC dropped `ReverseClaimer` — it
+    ///        claimed a reverse node for `owner`, and this deployment runs no
+    ///        reverse registrar, so the claim had nothing to call.
     constructor(
-        address owner,
+        address /* owner */,
         ENS ens,
         IGatewayProvider batchGatewayProvider
-    )
-        AbstractUniversalResolver(batchGatewayProvider)
-        ReverseClaimer(ens, owner)
-    {
+    ) AbstractUniversalResolver(batchGatewayProvider) {
         registry = ens;
     }
 
