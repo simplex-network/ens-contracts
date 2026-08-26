@@ -127,6 +127,22 @@ describe('controller storage layout', () => {
     expect(BigInt(await read(maxSlot + 2))).toBe(0n)
   })
 
+  it('wasDefaultResolver is a mapping, so it costs no linear slot', async () => {
+    const { controller, resolver } = await load()
+    const before = await snapshot(controller.address)
+    await controller.write.setDefaultResolver([resolver.address], {
+      account: owner,
+    })
+    const after = await snapshot(controller.address)
+    // defaultResolver itself is a linear slot and may change; the set must not
+    // add a second one, or the appended mapping would have eaten into the gap
+    // twice over.
+    expect(changed(before, after).length).toBeLessThanOrEqual(1)
+    expect(await controller.read.wasDefaultResolver([resolver.address])).toBe(
+      true,
+    )
+  })
+
   it('the credits mapping is keyed from its own slot', async () => {
     const { controller } = await load()
     const before = await snapshot(controller.address)

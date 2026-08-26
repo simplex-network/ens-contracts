@@ -54,6 +54,7 @@ contract BaseRegistrarImplementation is
 
     event MetadataRendererChanged(address indexed renderer);
     event MaxLabelLengthChanged(uint256 maxLabelLength);
+    event SubnameHookChanged(address indexed hook);
 
     error LabelTooLong(uint256 length, uint256 max);
 
@@ -169,6 +170,12 @@ contract BaseRegistrarImplementation is
             // subname generation so the previous registrant's subnames are
             // invalidated (not inherited by the new owner) and become
             // garbage-collectable. See SubnameRegistrar.onReregister.
+            //
+            // NOTE for hook authors: this fires between the burn and the mint.
+            // The token does not exist at this instant — `ownerOf` reverts and
+            // `ens.owner` still names the previous holder — so a hook must not
+            // read either. `onExpiryChanged` below fires after the mint, when
+            // both are settled.
             _burn(id);
             if (subnameHook != address(0)) {
                 ISubnameHook(subnameHook).onReregister(
@@ -231,6 +238,7 @@ contract BaseRegistrarImplementation is
     // Sets the SubnameRegistrar notified on re-registration; 0 disables.
     function setSubnameHook(address hook) external onlyOwner {
         subnameHook = hook;
+        emit SubnameHookChanged(hook);
     }
 
     /// ------------------------------------------------------------------

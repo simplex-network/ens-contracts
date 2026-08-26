@@ -73,7 +73,12 @@ const config = {
       chainId: 1,
       forking: {
         enabled: true,
-        url: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+        // MAINNET_RPC_URL first so a fork can be driven without putting the
+        // provider key in the child's argv, where `ps` exposes it to every
+        // local user. scripts/gas-tools.mjs passes it through the environment.
+        url:
+          process.env.MAINNET_RPC_URL ||
+          `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
       },
     },
     localhost: {

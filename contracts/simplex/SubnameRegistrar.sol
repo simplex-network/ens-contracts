@@ -72,6 +72,7 @@ contract SubnameRegistrar is ISubnameRegistrar {
     error InvalidNonce();
     error InvalidSignature();
     error LabelTooLong(uint256 length, uint256 max);
+    error EmptyLabel();
     error NotBaseRegistrar();
     error AlreadyInitialised();
     error StaleSubnameMustBePurged(bytes32 node);
@@ -206,6 +207,9 @@ contract SubnameRegistrar is ISubnameRegistrar {
         bytes32 parentNode,
         string calldata label
     ) internal returns (bytes32 node) {
+        // An empty label hashes to keccak256("") and namehashes back to the
+        // parent, so `.alice.simplex` would be indexed as a child of itself.
+        if (bytes(label).length == 0) revert EmptyLabel();
         if (bytes(label).length > MAX_LABEL_LENGTH)
             revert LabelTooLong(bytes(label).length, MAX_LABEL_LENGTH);
         bytes32 labelhash = keccak256(bytes(label));

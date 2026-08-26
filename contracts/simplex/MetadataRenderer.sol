@@ -260,6 +260,13 @@ contract MetadataRenderer is IMetadataRenderer {
             else if (c == ">") j = _append(out, j, "&gt;");
             else if (c == '"') j = _append(out, j, "&quot;");
             else if (c == "'") j = _append(out, j, "&apos;");
+            // C0 controls are outside XML 1.0's Char production, so a label
+            // carrying one would render an SVG no parser accepts. Map them to a
+            // space, which is what `_jsonEscape` already does — the two views of
+            // a name must agree, or the round-trip through the token URI is
+            // lossy in one of them and not the other. Continuation bytes of
+            // multi-byte UTF-8 sequences are all >= 0x80 and pass through.
+            else if (c < 0x20) out[j++] = 0x20;
             else out[j++] = c;
         }
         assembly {

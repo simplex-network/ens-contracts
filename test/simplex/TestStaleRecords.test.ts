@@ -52,6 +52,36 @@ async function sponsoredRegister(controller: any, label: string, to: `0x${string
  * routing conversations to whoever owned the name last.
  */
 describe('records do not survive re-registration', () => {
+  it('still retires records after the default resolver is rotated', async () => {
+    const { controller, resolver, baseRegistrar, ens, subnameRegistrar } =
+      await load()
+
+    // A name registered against the resolver that is default *today*.
+    await sponsoredRegister(controller, 'rotated', squatter.address, resolver.address)
+    await resolver.write.setText([node('rotated'), KEY, 'https://smp/squatter'], {
+      account: squatter,
+    })
+
+    // Governance rotates the default to a freshly deployed resolver. The name
+    // above still points at the old one — nothing rewrites live registrations.
+    const newResolver = await connection.viem.deployContract('SimplexResolver', [
+      ens.address,
+      subnameRegistrar.address,
+      controller.address,
+      zeroAddressLocal,
+    ])
+    await controller.write.setDefaultResolver([newResolver.address], {
+      account: owner,
+    })
+
+    await connection.networkHelpers.time.increase(Number(YEAR + GRACE + 1n))
+    await sponsoredRegister(controller, 'rotated', victim.address, newResolver.address)
+
+    // Testing `stale == defaultResolver` would no-op here and hand the victim a
+    // name still resolving to the squatter.
+    expect(await resolver.read.text([node('rotated'), KEY])).toBe('')
+  })
+
   it('a squatter cannot leave their contact link on a name they let lapse', async () => {
     const { controller, resolver, baseRegistrar } = await load()
 

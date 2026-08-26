@@ -110,6 +110,7 @@ contract SimplexController is
     error NameReserved(string name);
     error NftRequired();
     error MinCharLengthCanOnlyDecrease();
+    error MinCharLengthZero();
     error NftGateCanOnlyBeDisabled();
     error ZeroAddress();
     error NotBeneficiary();
@@ -269,6 +270,9 @@ contract SimplexController is
     ///         this resolver are granted edit credits.
     function setDefaultResolver(address resolver) external onlyOwner {
         defaultResolver = resolver;
+        // Never unset. Rotating the default must not strand the records written
+        // against the previous one — see `_retireStaleRecords`.
+        if (resolver != address(0)) wasDefaultResolver[resolver] = true;
         emit DefaultResolverChanged(resolver);
     }
 
@@ -302,6 +306,10 @@ contract SimplexController is
     // --- Simplex admin functions ---
 
     function setMinCharLength(uint8 newMinCharLength) external onlyOwner {
+        // Monotonic decrease is the policy; zero is not a policy but a mistake,
+        // and it is unrecoverable — the setter only goes down, so a namespace
+        // that admits the empty label can never be walked back.
+        if (newMinCharLength == 0) revert MinCharLengthZero();
         if (newMinCharLength >= minCharLength) revert MinCharLengthCanOnlyDecrease();
         minCharLength = newMinCharLength;
         emit MinCharLengthChanged(newMinCharLength);
@@ -468,7 +476,7 @@ contract SimplexController is
     ///      A first registration is a no-op: the node has no resolver yet.
     function _retireStaleRecords(bytes32 node) private {
         address stale = ens.resolver(node);
-        if (stale != address(0) && stale == defaultResolver) {
+        if (stale != address(0) && wasDefaultResolver[stale]) {
             IClearableResolver(stale).clearRecords(node);
         }
     }
@@ -724,6 +732,14 @@ contract SimplexController is
     address public defaultResolver;
     /// @dev Gates the payable path only. Credited and reserved registrations ignore it.
     bool public publicSalesOpen;
+    /// @dev Every resolver that has ever been the default, never cleared. The
+    ///      set this contract may call `clearRecords` on: each entry is a
+    ///      resolver we deployed and that trusts this controller, so the call
+    ///      cannot revert or burn the caller's gas. Testing `== defaultResolver`
+    ///      instead would silently stop retiring records the moment the default
+    ///      was rotated, quietly reopening the stale-record leak for every name
+    ///      still pointing at the old one.
+    mapping(address => bool) public wasDefaultResolver;
 
-    uint256[45] private __gap;
+    uint256[44] private __gap;
 }
