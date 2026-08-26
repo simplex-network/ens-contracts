@@ -7,10 +7,11 @@ import {RegistryUtils, ENS} from "./RegistryUtils.sol";
 contract UniversalResolver is AbstractUniversalResolver {
     ENS public immutable registry;
 
-    /// @param owner Retained for constructor-ABI compatibility with upstream and
-    ///        with the deployment scripts. SNRC dropped `ReverseClaimer` — it
-    ///        claimed a reverse node for `owner`, and this deployment runs no
-    ///        reverse registrar, so the claim had nothing to call.
+    /// @dev The first parameter is unnamed on purpose. Upstream passed it to
+    ///      `ReverseClaimer`, which claimed a reverse node for it; SNRC runs no
+    ///      reverse registrar, so the claim had nothing to call and the
+    ///      inheritance is gone. The parameter is kept so the constructor ABI
+    ///      still matches upstream and the deployment scripts.
     constructor(
         address /* owner */,
         ENS ens,

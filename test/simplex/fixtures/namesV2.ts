@@ -81,7 +81,7 @@ export async function deployNamesV2(
     args: [
       baseRegistrar.address,
       priceOracle.address,
-      0n,
+      1n, // minCommitmentAge: must be non-zero; 1s means a separate block suffices
       86400n,
       ens.address,
       {
@@ -190,6 +190,8 @@ export const eip712Types = {
     { name: 'from', type: 'address' },
     { name: 'to', type: 'address' },
     { name: 'tokenId', type: 'uint256' },
+    { name: 'ephemeralPubKey', type: 'bytes' },
+    { name: 'viewTag', type: 'bytes1' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],

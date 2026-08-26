@@ -16,6 +16,13 @@ import {ENS} from "../registry/ENS.sol";
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
 import {IPriceOracleUSD} from "../ethregistrar/IPriceOracleUSD.sol";
 
+/// @dev `clearRecords` lives on ResolverBase, not the Resolver interface the
+///      controller already imports. Declared minimally rather than pulling the
+///      whole resolver in.
+interface IClearableResolver {
+    function clearRecords(bytes32 node) external;
+}
+
 /// @dev Fork of ETHRegistrarController with additional access controls:
 ///      - Minimum name length gate (admin can lower monotonically)
 ///      - Reserved names (admin-managed blocklist)
@@ -34,7 +41,6 @@ contract SimplexController is
     using StringUtils for *;
 
     uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
-    uint64 private constant MAX_EXPIRY = type(uint64).max;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
     // Implemented by hand rather than inheriting ReentrancyGuardUpgradeable so
@@ -60,6 +66,9 @@ contract SimplexController is
     address private _unusedDefaultReverseRegistrar;
     IPriceOracleUSD public prices;
     bytes32 public tldNode;
+    /// @dev Unread on-chain since reverse resolution was removed, but kept: it is
+    ///      a public getter indexers use to identify the TLD, and deleting a
+    ///      storage variable would shift every slot below it.
     string public tldSuffix;
 
     mapping(bytes32 => uint256) public commitments;
@@ -94,6 +103,7 @@ contract SimplexController is
         bool nftGateEnabled;
     }
 
+    error MinCommitmentAgeZero();
     error MaxCommitmentAgeTooLow();
     error MaxCommitmentAgeTooHigh();
     error NameTooShort(string name, uint8 minLength);
@@ -190,6 +200,10 @@ contract SimplexController is
         __UUPSUpgradeable_init();
         _reentrancyStatus = _NOT_ENTERED;
 
+        // Zero would let an observer commit and register in the same block as the
+        // reveal they are front-running: `commitmentTimestamp + 0 > block.timestamp`
+        // is false when both land in one block. Any non-zero value closes that.
+        if (_minCommitmentAge == 0) revert MinCommitmentAgeZero();
         if (_maxCommitmentAge <= _minCommitmentAge) revert MaxCommitmentAgeTooLow();
         // Sanity cap on how long a commitment may sit before it expires.
         // The previous form compared duration to block.timestamp (~1.7e9),
@@ -328,6 +342,9 @@ contract SimplexController is
         if (!reservedNames[labelhash]) revert NameNotReserved(label);
         if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
 
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+        _retireStaleRecords(namehash);
+
         address resolver = defaultResolver;
         if (resolver == address(0)) {
             base.registerWithLabel(label, owner, duration);
@@ -335,7 +352,6 @@ contract SimplexController is
         }
 
         base.registerWithLabel(label, address(this), duration);
-        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
         ens.setRecord(namehash, owner, resolver, 0);
         base.transferFrom(address(this), owner, uint256(labelhash));
     }
@@ -369,11 +385,15 @@ contract SimplexController is
         return label.strlen() >= minCharLength;
     }
 
+    /// @notice Whether `label` can actually be registered. Reserved names are
+    ///         included: they are refused at registration, so reporting them as
+    ///         available would have a caller burn a commitment and wait out
+    ///         `minCommitmentAge` only to revert `NameReserved`.
     function available(
         string calldata label
     ) public view override returns (bool) {
         bytes32 labelhash = keccak256(bytes(label));
-        return _available(label, labelhash);
+        return _available(label, labelhash) && !reservedNames[labelhash];
     }
 
     function makeCommitment(
@@ -431,17 +451,39 @@ contract SimplexController is
     }
 
     /// @dev The list price of `label` for `duration`, in attoUSD.
+    /// @dev A re-registered name must not inherit the previous owner's records.
+    ///      Nothing clears them on expiry: the registry keeps the node's resolver
+    ///      pointer and the resolver keeps its data, so without this a squatter
+    ///      could point `simplex.contact` at their own link, let the name lapse,
+    ///      and keep receiving the next owner's conversations.
+    ///
+    ///      `clearRecords` bumps the node's record version, invalidating every
+    ///      key in one write, and the controller is `trustedETHController` so it
+    ///      is authorised. Only the default resolver is touched: calling into an
+    ///      arbitrary user-supplied resolver could revert and brick the
+    ///      registration. A node whose previous owner pointed it at some other
+    ///      resolver keeps that pointer unless the new registration supplies one
+    ///      — see docs/security.md.
+    ///
+    ///      A first registration is a no-op: the node has no resolver yet.
+    function _retireStaleRecords(bytes32 node) private {
+        address stale = ens.resolver(node);
+        if (stale != address(0) && stale == defaultResolver) {
+            IClearableResolver(stale).clearRecords(node);
+        }
+    }
+
     function _rentPriceUSD(
         string calldata label,
         bytes32 labelhash,
         uint256 duration
-    ) private view returns (uint256) {
-        IPriceOracle.Price memory p = prices.priceUSD(
-            label,
-            base.nameExpires(uint256(labelhash)),
-            duration
-        );
-        return p.base + p.premium;
+    ) private view returns (IPriceOracle.Price memory) {
+        return
+            prices.priceUSD(
+                label,
+                base.nameExpires(uint256(labelhash)),
+                duration
+            );
     }
 
     /// @notice Register and pay. Gated by the public sales switch; the credited
@@ -478,9 +520,12 @@ contract SimplexController is
         _checkSimplexGates(registration.label, false);
 
         bytes32 labelhash = keccak256(bytes(registration.label));
-        _spendAllowance(
-            _rentPriceUSD(registration.label, labelhash, registration.duration)
+        IPriceOracle.Price memory usd = _rentPriceUSD(
+            registration.label,
+            labelhash,
+            registration.duration
         );
+        _spendAllowance(usd.base + usd.premium);
 
         // Zero cost in the event, and no `_rentPrice` call: nothing is paid on
         // this path, so the wei figure would be a quote rather than a payment —
@@ -522,6 +567,11 @@ contract SimplexController is
         delete (commitments[commitment]);
 
         bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+
+        // Before the mint and before any new record is written: clearing after
+        // `multicallWithNodeCheck` would wipe the records this registration just
+        // set, since the version bump invalidates every key at once.
+        _retireStaleRecords(namehash);
 
         if (registration.resolver == address(0)) {
             expires = base.registerWithLabel(
@@ -591,7 +641,10 @@ contract SimplexController is
         bytes32 referrer
     ) external nonReentrant {
         bytes32 labelhash = keccak256(bytes(label));
-        _spendAllowance(_rentPriceUSD(label, labelhash, duration));
+        // Base only, matching the payable `renew`, which charges `price.base`.
+        // The premium is the expired-name auction price and is owed on
+        // re-registration, never on renewing a name you already hold.
+        _spendAllowance(_rentPriceUSD(label, labelhash, duration).base);
         // zero cost, and no feed read — see `registerWithCredit`
         _renewCore(label, labelhash, duration, 0, referrer);
     }

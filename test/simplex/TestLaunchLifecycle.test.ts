@@ -126,7 +126,7 @@ describe('launch lifecycle', () => {
         args: [
           baseRegistrar.address,
           priceOracle.address,
-          0n,
+          1n, // minCommitmentAge: zero is refused by initialize
           86400n,
           ens.address,
           {
@@ -614,6 +614,8 @@ describe('launch lifecycle', () => {
         from: alice.address,
         to: bob.address,
         tokenId,
+        ephemeralPubKey: `0x${'02'.repeat(33)}` as `0x${string}`,
+        viewTag: '0x7f' as `0x${string}`,
         nonce: 0n,
         deadline: FAR_FUTURE,
       }
@@ -632,8 +634,8 @@ describe('launch lifecycle', () => {
             'TransferName',
             m,
           ),
-          `0x${'02'.repeat(33)}`,
-          '0x7f',
+          m.ephemeralPubKey,
+          m.viewTag,
         ],
         { account: registrar },
       )

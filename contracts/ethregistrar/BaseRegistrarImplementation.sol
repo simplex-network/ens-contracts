@@ -12,6 +12,8 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 ///      contracts/simplex/SubnameRegistrar.sol.
 interface ISubnameHook {
     function onReregister(bytes32 node) external;
+
+    function onExpiryChanged(bytes32 node, uint256 expiry) external;
 }
 
 /// @dev INVARIANT (ERC721Enumerable): enumeration (`totalSupply`,
@@ -176,6 +178,12 @@ contract BaseRegistrarImplementation is
         }
         _mint(owner, id);
         ens.setSubnodeOwner(baseNode, bytes32(id), owner);
+        if (subnameHook != address(0)) {
+            ISubnameHook(subnameHook).onExpiryChanged(
+                keccak256(abi.encodePacked(baseNode, bytes32(id))),
+                expiries[id]
+            );
+        }
 
         emit NameRegistered(id, owner, block.timestamp + duration);
 
@@ -192,6 +200,12 @@ contract BaseRegistrarImplementation is
         ); // Prevent future overflow
 
         expiries[id] += duration;
+        if (subnameHook != address(0)) {
+            ISubnameHook(subnameHook).onExpiryChanged(
+                keccak256(abi.encodePacked(baseNode, bytes32(id))),
+                expiries[id]
+            );
+        }
         emit NameRenewed(id, expiries[id]);
         return expiries[id];
     }
@@ -237,23 +251,35 @@ contract BaseRegistrarImplementation is
     bytes32 private constant _EIP712_VERSION = keccak256("1");
     bytes32 public constant TRANSFER_TYPEHASH =
         keccak256(
-            "TransferName(address from,address to,uint256 tokenId,uint256 nonce,uint256 deadline)"
+            "TransferName(address from,address to,uint256 tokenId,bytes ephemeralPubKey,bytes1 viewTag,uint256 nonce,uint256 deadline)"
         );
+
+    /// @dev ERC-5564 scheme id 1: secp256k1 with view tags, the only scheme the
+    ///      standard currently registers and the one the client implements.
+    uint256 public constant STEALTH_SCHEME_ID = 1;
 
     /// @dev One counter per signer, consumed in order, so a signature cannot be
     ///      replayed and two intents cannot be reordered.
     mapping(address => uint256) public nonces;
 
-    /// @dev ERC-5564 announcement. Carries the sender's ephemeral public key so
-    ///      the recipient can rediscover a stealth destination from their seed
-    ///      alone — without it, a gift is findable only from a message, and a
-    ///      restored device has no messages. Emitted only when the sender opts
-    ///      in, so an ordinary transfer costs nothing extra.
-    event StealthNameTransfer(
-        address indexed to,
+    /// @dev ERC-5564 `Announcement`, verbatim in name, parameter list and
+    ///      indexing, so any indexer that knows the standard decodes ours by
+    ///      topic without special-casing. It carries the sender's ephemeral
+    ///      public key so the recipient can rediscover a stealth destination
+    ///      from their seed alone — without it a gift is findable only from a
+    ///      message, and a restored device has no messages. Emitted only when
+    ///      the sender opts in, so an ordinary transfer costs nothing extra.
+    ///
+    ///      Deliberately emitted by this contract rather than through the
+    ///      canonical singleton announcer: a recovery scan then covers SimpleX
+    ///      name transfers only, instead of every stealth transfer on the chain.
+    ///      That is the whole reason the scan is cheap enough to run on restore.
+    event Announcement(
+        uint256 indexed schemeId,
+        address indexed stealthAddress,
+        address indexed caller,
         bytes ephemeralPubKey,
-        bytes1 viewTag,
-        uint256 tokenId
+        bytes metadata
     );
 
     error TransferToSelf();
@@ -276,9 +302,13 @@ contract BaseRegistrarImplementation is
     }
 
     /// @param ephemeralPubKey Compressed secp256k1 point, or empty for no
-    ///        announcement. Deliberately outside the signed struct: it steers
-    ///        discovery, not ownership, so a relayer that drops or corrupts it
-    ///        costs the recipient a rescan, never the name.
+    ///        announcement. Inside the signed struct: the announcement asserts
+    ///        that this transfer was stealth-derived for this recipient, and a
+    ///        relayer free to choose it could attach a fabricated derivation to
+    ///        a genuine transfer, or suppress the real one. Signing it costs a
+    ///        hash and makes the announcement as authentic as the transfer.
+    /// @param viewTag First byte of the shared secret; lets a scanner discard
+    ///        ~255/256 of announcements on one hash. Also signed.
     function transferWithSig(
         address from,
         address to,
@@ -300,24 +330,21 @@ contract BaseRegistrarImplementation is
         // moved out from under the person about to re-register it.
         if (ownerOf(tokenId) != from) revert NotNameOwner();
 
-        bytes32 digest = keccak256(
-            abi.encodePacked(
-                "\x19\x01",
-                DOMAIN_SEPARATOR(),
-                keccak256(
-                    abi.encode(
-                        TRANSFER_TYPEHASH,
-                        from,
-                        to,
-                        tokenId,
-                        nonce,
-                        deadline
-                    )
-                )
+        if (
+            !SignatureChecker.isValidSignatureNow(
+                from,
+                _transferDigest(
+                    from,
+                    to,
+                    tokenId,
+                    keccak256(ephemeralPubKey),
+                    viewTag,
+                    nonce,
+                    deadline
+                ),
+                sig
             )
-        );
-        if (!SignatureChecker.isValidSignatureNow(from, digest, sig))
-            revert InvalidSignature();
+        ) revert InvalidSignature();
 
         unchecked {
             nonces[from] = nonce + 1;
@@ -326,9 +353,60 @@ contract BaseRegistrarImplementation is
         // the registry node and its subnames follow the token.
         _transfer(from, to, tokenId);
 
-        if (ephemeralPubKey.length != 0) {
-            emit StealthNameTransfer(to, ephemeralPubKey, viewTag, tokenId);
-        }
+        if (ephemeralPubKey.length != 0)
+            _announce(to, tokenId, ephemeralPubKey, viewTag);
+    }
+
+    /// @dev Split out of `transferWithSig` for the same stack reason as
+    ///      `_transferDigest`.
+    function _announce(
+        address to,
+        uint256 tokenId,
+        bytes calldata ephemeralPubKey,
+        bytes1 viewTag
+    ) private {
+        // ERC-5564 ERC-721 metadata layout: view tag, then the transferFrom
+        // selector, the token contract and the token id, so a scanner that
+        // matches the view tag learns what it was sent without a second lookup.
+        emit Announcement(
+            STEALTH_SCHEME_ID,
+            to,
+            msg.sender,
+            ephemeralPubKey,
+            abi.encodePacked(viewTag, bytes4(0x23b872dd), address(this), tokenId)
+        );
+    }
+
+    /// @dev Split out of `transferWithSig` only to keep that function's stack
+    ///      within the EVM's 16-slot reach.
+    function _transferDigest(
+        address from,
+        address to,
+        uint256 tokenId,
+        bytes32 ephemeralPubKeyHash,
+        bytes1 viewTag,
+        uint256 nonce,
+        uint256 deadline
+    ) private view returns (bytes32) {
+        return
+            keccak256(
+                abi.encodePacked(
+                    "\x19\x01",
+                    DOMAIN_SEPARATOR(),
+                    keccak256(
+                        abi.encode(
+                            TRANSFER_TYPEHASH,
+                            from,
+                            to,
+                            tokenId,
+                            ephemeralPubKeyHash,
+                            viewTag,
+                            nonce,
+                            deadline
+                        )
+                    )
+                )
+            );
     }
 
     /// @dev Auto-reclaim: an NFT transfer re-points the 2LD's ENS registry node

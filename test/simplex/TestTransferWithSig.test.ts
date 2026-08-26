@@ -44,6 +44,8 @@ const types = {
     { name: 'from', type: 'address' },
     { name: 'to', type: 'address' },
     { name: 'tokenId', type: 'uint256' },
+    { name: 'ephemeralPubKey', type: 'bytes' },
+    { name: 'viewTag', type: 'bytes1' },
     { name: 'nonce', type: 'uint256' },
     { name: 'deadline', type: 'uint256' },
   ],
@@ -59,6 +61,8 @@ async function signTransfer(
     nonce: bigint
     deadline: bigint
   },
+  ephemeralPubKey: `0x${string}` = '0x',
+  viewTag: `0x${string}` = '0x00',
 ) {
   const chainId = await publicClient.getChainId()
   return client.signTypedData({
@@ -71,7 +75,7 @@ async function signTransfer(
     },
     types,
     primaryType: 'TransferName',
-    message,
+    message: { ...message, ephemeralPubKey, viewTag },
   })
 }
 
@@ -89,7 +93,7 @@ describe('transferWithSig', () => {
     expect(await baseRegistrar.read.TRANSFER_TYPEHASH()).toBe(
       keccak256(
         toHex(
-          'TransferName(address from,address to,uint256 tokenId,uint256 nonce,uint256 deadline)',
+          'TransferName(address from,address to,uint256 tokenId,bytes ephemeralPubKey,bytes1 viewTag,uint256 nonce,uint256 deadline)',
         ),
       ),
     )
@@ -139,7 +143,13 @@ describe('transferWithSig', () => {
       nonce: 0n,
       deadline: FAR_FUTURE,
     }
-    const sig = await signTransfer(aliceClient, baseRegistrar.address, message)
+    const sig = await signTransfer(
+      aliceClient,
+      baseRegistrar.address,
+      message,
+      EPH,
+      VIEW_TAG,
+    )
     const hash = await baseRegistrar.write.transferWithSig(
       [
         message.from,
@@ -157,12 +167,23 @@ describe('transferWithSig', () => {
     const logs = await publicClient.getContractEvents({
       address: baseRegistrar.address,
       abi: baseRegistrar.abi,
-      eventName: 'StealthNameTransfer',
+      eventName: 'Announcement',
     })
     expect(logs.length).toBe(1)
     expect(logs[0].args.ephemeralPubKey).toBe(EPH)
-    expect(logs[0].args.viewTag).toBe(VIEW_TAG)
-    expect(logs[0].args.to).toBe(getAddress(bobAccount.address))
+    expect(logs[0].args.stealthAddress).toBe(getAddress(bobAccount.address))
+    expect(logs[0].args.schemeId).toBe(1n)
+    expect(logs[0].args.caller).toBe(getAddress(relayerClient.account.address))
+    // ERC-5564 metadata for an ERC-721: view tag, transferFrom selector, token
+    // contract, token id. Pinned so the layout stays decodable by any indexer
+    // that knows the standard.
+    expect(logs[0].args.metadata).toBe(
+      ('0x' +
+        VIEW_TAG.slice(2) +
+        '23b872dd' +
+        baseRegistrar.address.slice(2).toLowerCase() +
+        TOKEN_ID.toString(16).padStart(64, '0')) as `0x${string}`,
+    )
   })
 
   it('emits nothing for a plain transfer', async () => {
@@ -191,7 +212,7 @@ describe('transferWithSig', () => {
     const logs = await publicClient.getContractEvents({
       address: baseRegistrar.address,
       abi: baseRegistrar.abi,
-      eventName: 'StealthNameTransfer',
+      eventName: 'Announcement',
     })
     expect(logs.length).toBe(0)
   })

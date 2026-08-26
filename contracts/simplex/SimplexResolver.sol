@@ -36,6 +36,8 @@ contract SimplexResolver is PublicResolver {
     error SignatureExpired();
     error InvalidNonce();
     error InvalidSignature();
+    error NotSubnameRegistrar();
+    error NodeNotOwnedByRegistrar();
 
     constructor(
         ENS _ens,
@@ -50,6 +52,30 @@ contract SimplexResolver is PublicResolver {
             _trustedReverseRegistrar
         )
     {}
+
+    /// @notice Retire every record on a subname, callable only by the subname
+    ///         registrar and only for a node the registrar itself owns in the
+    ///         registry.
+    /// @dev A subname node is reused verbatim when its label is re-created, and
+    ///      `SubnameRegistrar._clear` cannot reach this through `authorised`:
+    ///      that path resolves the owner to the 2LD holder, never the registrar.
+    ///      Without this, deleting or purging a subname would leave its records
+    ///      in place, and re-creating the label under a new 2LD owner would
+    ///      resurface the previous owner's SimpleX address under a name the new
+    ///      owner now controls. The registrar clears on delete and on purge, so
+    ///      a revived label always starts empty.
+    ///
+    ///      The scope is deliberately narrow: one function, no writes, and only
+    ///      nodes whose registry owner is the caller — which for this deployment
+    ///      is exactly the set of subnames the registrar created. It is not a
+    ///      second `trustedETHController`; that slot can write any record on any
+    ///      node.
+    function clearSubnameRecords(bytes32 node) external {
+        if (msg.sender != address(nameWrapper)) revert NotSubnameRegistrar();
+        if (ens.owner(node) != msg.sender) revert NodeNotOwnedByRegistrar();
+        recordVersions[node]++;
+        emit VersionChanged(node, recordVersions[node]);
+    }
 
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return
