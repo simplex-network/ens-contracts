@@ -115,7 +115,7 @@ describe('MetadataRenderer (fuzz)', () => {
         expect(inner.includes('>')).toBe(false)
       }
       // (5) the wrapped lines reassemble (un-escaped) to the full name
-      expect(xmlUnescape(inners.join(''))).toBe(label + '.testing')
+      expect(xmlUnescape(inners.join(''))).toBe(sanitizeControls(label) + '.testing')
     }
   }, 30000)
 })

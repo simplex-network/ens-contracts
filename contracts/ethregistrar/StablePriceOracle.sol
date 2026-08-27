@@ -2,6 +2,7 @@
 pragma solidity ~0.8.17;
 
 import "./IPriceOracle.sol";
+import "./IPriceOracleUSD.sol";
 import "../utils/StringUtils.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
@@ -11,7 +12,7 @@ interface AggregatorInterface {
 }
 
 // StablePriceOracle sets a price in USD, based on an oracle.
-contract StablePriceOracle is IPriceOracle {
+contract StablePriceOracle is IPriceOracleUSD {
     using StringUtils for *;
 
     // Rent in base price units by length
@@ -20,11 +21,21 @@ contract StablePriceOracle is IPriceOracle {
     uint256 public immutable price3Letter;
     uint256 public immutable price4Letter;
     uint256 public immutable price5Letter;
+    /// @dev SNRC: `price5Letter` applied to every name of five characters or
+    ///      more, so a six-character name could never be priced apart from a
+    ///      five-character one. Supplying a sixth entry splits them; a
+    ///      five-entry array keeps the previous behaviour exactly.
+    uint256 public immutable price6Letter;
 
     // Oracle address
     AggregatorInterface public immutable usdOracle;
 
     event RentPriceChanged(uint256[] prices);
+
+    /// @dev The feed reported zero or a negative price. Zero would panic on the
+    ///      division below; negative would wrap the cast to ~2**256 and floor
+    ///      every quote to zero, handing out free names. Both fail loudly instead.
+    error InvalidPriceFeed(int256 answer);
 
     constructor(AggregatorInterface _usdOracle, uint256[] memory _rentPrices) {
         usdOracle = _usdOracle;
@@ -33,6 +44,7 @@ contract StablePriceOracle is IPriceOracle {
         price3Letter = _rentPrices[2];
         price4Letter = _rentPrices[3];
         price5Letter = _rentPrices[4];
+        price6Letter = _rentPrices.length > 5 ? _rentPrices[5] : _rentPrices[4];
     }
 
     function price(
@@ -40,10 +52,34 @@ contract StablePriceOracle is IPriceOracle {
         uint256 expires,
         uint256 duration
     ) external view override returns (IPriceOracle.Price memory) {
+        IPriceOracle.Price memory usd = _priceUSD(name, expires, duration);
+        return
+            IPriceOracle.Price({
+                base: attoUSDToWei(usd.base),
+                premium: attoUSDToWei(usd.premium)
+            });
+    }
+
+    /// @inheritdoc IPriceOracleUSD
+    function priceUSD(
+        string calldata name,
+        uint256 expires,
+        uint256 duration
+    ) external view override returns (IPriceOracle.Price memory) {
+        return _priceUSD(name, expires, duration);
+    }
+
+    function _priceUSD(
+        string calldata name,
+        uint256 expires,
+        uint256 duration
+    ) internal view returns (IPriceOracle.Price memory) {
         uint256 len = name.strlen();
         uint256 basePrice;
 
-        if (len >= 5) {
+        if (len >= 6) {
+            basePrice = price6Letter * duration;
+        } else if (len == 5) {
             basePrice = price5Letter * duration;
         } else if (len == 4) {
             basePrice = price4Letter * duration;
@@ -57,8 +93,8 @@ contract StablePriceOracle is IPriceOracle {
 
         return
             IPriceOracle.Price({
-                base: attoUSDToWei(basePrice),
-                premium: attoUSDToWei(_premium(name, expires, duration))
+                base: basePrice,
+                premium: _premium(name, expires, duration)
             });
     }
 
@@ -81,13 +117,17 @@ contract StablePriceOracle is IPriceOracle {
     }
 
     function attoUSDToWei(uint256 amount) internal view returns (uint256) {
-        uint256 ethPrice = uint256(usdOracle.latestAnswer());
-        return (amount * 1e8) / ethPrice;
+        return (amount * 1e8) / _ethPrice();
     }
 
     function weiToAttoUSD(uint256 amount) internal view returns (uint256) {
-        uint256 ethPrice = uint256(usdOracle.latestAnswer());
-        return (amount * ethPrice) / 1e8;
+        return (amount * _ethPrice()) / 1e8;
+    }
+
+    function _ethPrice() internal view returns (uint256) {
+        int256 answer = usdOracle.latestAnswer();
+        if (answer <= 0) revert InvalidPriceFeed(answer);
+        return uint256(answer);
     }
 
     function supportsInterface(
@@ -95,6 +135,7 @@ contract StablePriceOracle is IPriceOracle {
     ) public view virtual returns (bool) {
         return
             interfaceID == type(IERC165).interfaceId ||
-            interfaceID == type(IPriceOracle).interfaceId;
+            interfaceID == type(IPriceOracle).interfaceId ||
+            interfaceID == type(IPriceOracleUSD).interfaceId;
     }
 }

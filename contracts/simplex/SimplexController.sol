@@ -13,9 +13,15 @@ import {BaseRegistrarImplementation} from "../ethregistrar/BaseRegistrarImplemen
 import {StringUtils} from "../utils/StringUtils.sol";
 import {Resolver} from "../resolvers/Resolver.sol";
 import {ENS} from "../registry/ENS.sol";
-import {IReverseRegistrar} from "../reverseRegistrar/IReverseRegistrar.sol";
-import {IDefaultReverseRegistrar} from "../reverseRegistrar/IDefaultReverseRegistrar.sol";
 import {IETHRegistrarController, IPriceOracle} from "../ethregistrar/IETHRegistrarController.sol";
+import {IPriceOracleUSD} from "../ethregistrar/IPriceOracleUSD.sol";
+
+/// @dev `clearRecords` lives on ResolverBase, not the Resolver interface the
+///      controller already imports. Declared minimally rather than pulling the
+///      whole resolver in.
+interface IClearableResolver {
+    function clearRecords(bytes32 node) external;
+}
 
 /// @dev Fork of ETHRegistrarController with additional access controls:
 ///      - Minimum name length gate (admin can lower monotonically)
@@ -34,10 +40,7 @@ contract SimplexController is
 {
     using StringUtils for *;
 
-    uint8 constant REVERSE_RECORD_ETHEREUM_BIT = 1;
-    uint8 constant REVERSE_RECORD_DEFAULT_BIT = 2;
     uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
-    uint64 private constant MAX_EXPIRY = type(uint64).max;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
     // Implemented by hand rather than inheriting ReentrancyGuardUpgradeable so
@@ -54,10 +57,18 @@ contract SimplexController is
     BaseRegistrarImplementation base;
     uint256 public minCommitmentAge;
     uint256 public maxCommitmentAge;
-    IReverseRegistrar public reverseRegistrar;
-    IDefaultReverseRegistrar public defaultReverseRegistrar;
-    IPriceOracle public prices;
+    // Were `reverseRegistrar` and `defaultReverseRegistrar`. SNRC runs no reverse
+    // resolution, so nothing writes them and the initializer no longer takes
+    // them. The two slots are kept rather than deleted: removing them would
+    // shift every variable below, and reserving them means reverse resolution
+    // can be reintroduced in an upgrade without a layout migration.
+    address private _unusedReverseRegistrar;
+    address private _unusedDefaultReverseRegistrar;
+    IPriceOracleUSD public prices;
     bytes32 public tldNode;
+    /// @dev Unread on-chain since reverse resolution was removed, but kept: it is
+    ///      a public getter indexers use to identify the TLD, and deleting a
+    ///      storage variable would shift every slot below it.
     string public tldSuffix;
 
     mapping(bytes32 => uint256) public commitments;
@@ -67,7 +78,11 @@ contract SimplexController is
     mapping(bytes32 => bool) public reservedNames;
     IERC721 public smpxNft;
     bool public nftGateEnabled;
-    bool public priceOracleFrozen;
+    // Was `priceOracleFrozen`. `freezePriceOracle` is gone: the Chainlink feed is
+    // immutable inside the oracle, so a frozen oracle whose feed is retired would
+    // break registration and renewal permanently. The slot is kept so the layout
+    // does not shift.
+    bool private _unusedPriceOracleFrozen;
 
     error CommitmentNotFound(bytes32 commitment);
     error CommitmentTooNew(bytes32 commitment, uint256 minimumCommitmentTimestamp, uint256 currentTimestamp);
@@ -75,7 +90,7 @@ contract SimplexController is
     error NameNotAvailable(string name);
     error DurationTooShort(uint256 duration);
     error ResolverRequiredWhenDataSupplied();
-    error ResolverRequiredForReverseRecord();
+    error ReverseRecordNotSupported();
     error UnexpiredCommitmentExists(bytes32 commitment);
     error InsufficientValue();
     error TransferFailed();
@@ -88,15 +103,22 @@ contract SimplexController is
         bool nftGateEnabled;
     }
 
+    error MinCommitmentAgeZero();
     error MaxCommitmentAgeTooLow();
     error MaxCommitmentAgeTooHigh();
     error NameTooShort(string name, uint8 minLength);
     error NameReserved(string name);
     error NftRequired();
     error MinCharLengthCanOnlyDecrease();
+    error MinCharLengthZero();
     error NftGateCanOnlyBeDisabled();
-    error PriceOracleAlreadyFrozen();
     error ZeroAddress();
+    error NotBeneficiary();
+    error NotOwnerOrBeneficiary();
+    error InsufficientAllowance(uint256 required, uint256 available);
+    error AlreadyFrozen();
+    error Frozen();
+    error PublicSalesClosed();
 
     event NameRegistered(
         string label,
@@ -120,8 +142,17 @@ contract SimplexController is
     event ReservedNameAdded(string name);
     event ReservedNameRemoved(string name);
     event NftGateDisabled();
-    event PriceOracleChanged(IPriceOracle indexed newOracle);
-    event PriceOracleFrozen();
+    event PriceOracleChanged(IPriceOracleUSD indexed newOracle);
+    event BeneficiaryChanged(address indexed beneficiary);
+    event RegistrarAllowanceSet(address indexed registrar, uint256 allowanceUSD);
+    event RegistrarAllowanceSpent(
+        address indexed registrar,
+        uint256 spentUSD,
+        uint256 remainingUSD
+    );
+    event DefaultResolverChanged(address indexed resolver);
+    event PublicSalesOpenChanged(bool open);
+    event ContractFrozen();
 
     error ReentrantCall();
 
@@ -130,6 +161,21 @@ contract SimplexController is
     ///      re-run on upgrade) reads as not-entered, so the guard is correct
     ///      without a reinitializer; `initialize` seeds it to `_NOT_ENTERED`
     ///      for fresh deploys to get the cheaper steady-state cost.
+    /// @dev The guardian key. Permanent once set: the owner cannot take it back.
+    modifier onlyBeneficiary() {
+        if (msg.sender != beneficiary) revert NotBeneficiary();
+        _;
+    }
+
+    /// @dev Restrictive actions are held by the owner and the guardian both, so
+    ///      they can be taken immediately rather than waiting on the owner's
+    ///      timelock. See docs/plans/names-v2-launch-to-freeze-plan.md.
+    modifier onlyOwnerOrBeneficiary() {
+        if (msg.sender != owner() && msg.sender != beneficiary)
+            revert NotOwnerOrBeneficiary();
+        _;
+    }
+
     modifier nonReentrant() {
         if (_reentrancyStatus == _ENTERED) revert ReentrantCall();
         _reentrancyStatus = _ENTERED;
@@ -144,11 +190,9 @@ contract SimplexController is
 
     function initialize(
         BaseRegistrarImplementation _base,
-        IPriceOracle _prices,
+        IPriceOracleUSD _prices,
         uint256 _minCommitmentAge,
         uint256 _maxCommitmentAge,
-        IReverseRegistrar _reverseRegistrar,
-        IDefaultReverseRegistrar _defaultReverseRegistrar,
         ENS _ens,
         SimplexConfig memory _config,
         address _owner
@@ -157,6 +201,10 @@ contract SimplexController is
         __UUPSUpgradeable_init();
         _reentrancyStatus = _NOT_ENTERED;
 
+        // Zero would let an observer commit and register in the same block as the
+        // reveal they are front-running: `commitmentTimestamp + 0 > block.timestamp`
+        // is false when both land in one block. Any non-zero value closes that.
+        if (_minCommitmentAge == 0) revert MinCommitmentAgeZero();
         if (_maxCommitmentAge <= _minCommitmentAge) revert MaxCommitmentAgeTooLow();
         // Sanity cap on how long a commitment may sit before it expires.
         // The previous form compared duration to block.timestamp (~1.7e9),
@@ -168,8 +216,6 @@ contract SimplexController is
         prices = _prices;
         minCommitmentAge = _minCommitmentAge;
         maxCommitmentAge = _maxCommitmentAge;
-        reverseRegistrar = _reverseRegistrar;
-        defaultReverseRegistrar = _defaultReverseRegistrar;
         tldNode = _config.tldNode;
         tldSuffix = _config.tldSuffix;
         minCharLength = _config.minCharLength;
@@ -181,7 +227,9 @@ contract SimplexController is
         }
     }
 
-    function _authorizeUpgrade(address) internal override onlyOwner {}
+    function _authorizeUpgrade(address) internal view override onlyOwner {
+        if (frozen) revert Frozen();
+    }
 
     /// @notice Recover ERC20 tokens sent to this contract by mistake.
     function recoverFunds(
@@ -192,9 +240,76 @@ contract SimplexController is
         IERC20(_token).transfer(_to, _amount);
     }
 
+    // --- names v2: governance ---
+
+    /// @notice Set the guardian key. Callable by the owner while unset, and by the
+    ///         beneficiary itself afterwards, so the owner cannot take it back.
+    function setBeneficiary(address newBeneficiary) external {
+        if (newBeneficiary == address(0)) revert ZeroAddress();
+        if (beneficiary == address(0)) {
+            if (msg.sender != owner()) revert NotBeneficiary();
+        } else if (msg.sender != beneficiary) {
+            revert NotBeneficiary();
+        }
+        beneficiary = newBeneficiary;
+        emit BeneficiaryChanged(newBeneficiary);
+    }
+
+    /// @notice Replace a registrar's spending limit, in attoUSD. Set, not add:
+    ///         zeroing it is the kill switch for a compromised registrar and must
+    ///         take one transaction.
+    function setRegistrarAllowance(
+        address registrar,
+        uint256 allowanceUSD
+    ) external onlyBeneficiary {
+        registrarAllowance[registrar] = allowanceUSD;
+        emit RegistrarAllowanceSet(registrar, allowanceUSD);
+    }
+
+    /// @notice The resolver new registrations point at. Only registrations against
+    ///         this resolver are granted edit credits.
+    function setDefaultResolver(address resolver) external onlyOwner {
+        defaultResolver = resolver;
+        // Never unset. Rotating the default must not strand the records written
+        // against the previous one — see `_retireStaleRecords`.
+        if (resolver != address(0)) wasDefaultResolver[resolver] = true;
+        emit DefaultResolverChanged(resolver);
+    }
+
+    /// @notice Open or close the payable registration path. Two-way until `freeze`,
+    ///         so it is also the pause switch. Held by the guardian as well as the
+    ///         owner because an exploit in the payable path accrues harm per block.
+    function setPublicSalesOpen(bool open) external onlyOwnerOrBeneficiary {
+        if (frozen) revert Frozen();
+        publicSalesOpen = open;
+        emit PublicSalesOpenChanged(open);
+    }
+
+    /// @notice One-way. Makes the implementation permanent and locks the sales
+    ///         switch in its current position. Everything else the owner can do
+    ///         survives, including `setPriceOracle` and the reserved-name setters.
+    /// @dev    Refuses while sales are closed. Freezing then would shut the
+    ///         payable path permanently — `setPublicSalesOpen` and the upgrade
+    ///         escape are disabled by the same flag — and the ordering is
+    ///         racy in practice: the pause is the guardian's, immediate, while
+    ///         the freeze is the owner's behind a timelock, so a pause answering
+    ///         an incident can land between a queued freeze and its execution.
+    ///         With this check that race fails safe: the freeze reverts and is
+    ///         re-queued.
+    function freeze() external onlyOwner {
+        if (frozen) revert AlreadyFrozen();
+        if (!publicSalesOpen) revert PublicSalesClosed();
+        frozen = true;
+        emit ContractFrozen();
+    }
+
     // --- Simplex admin functions ---
 
     function setMinCharLength(uint8 newMinCharLength) external onlyOwner {
+        // Monotonic decrease is the policy; zero is not a policy but a mistake,
+        // and it is unrecoverable — the setter only goes down, so a namespace
+        // that admits the empty label can never be walked back.
+        if (newMinCharLength == 0) revert MinCharLengthZero();
         if (newMinCharLength >= minCharLength) revert MinCharLengthCanOnlyDecrease();
         minCharLength = newMinCharLength;
         emit MinCharLengthChanged(newMinCharLength);
@@ -203,7 +318,9 @@ contract SimplexController is
     /// @notice Reserve any number of names in a single transaction. Pass a
     ///         single-element array to reserve one. Each addition emits a
     ///         `ReservedNameAdded` event so indexers see them individually.
-    function addReservedNames(string[] calldata names) external onlyOwner {
+    function addReservedNames(
+        string[] calldata names
+    ) external onlyOwnerOrBeneficiary {
         for (uint256 i = 0; i < names.length; ++i) {
             reservedNames[keccak256(bytes(names[i]))] = true;
             emit ReservedNameAdded(names[i]);
@@ -219,6 +336,11 @@ contract SimplexController is
         }
     }
 
+    /// @notice Hand a reserved name to its brand. Sets the default resolver on
+    ///         the node and grants edit credits, so the name resolves immediately
+    ///         and the brand's later record edits can be relayed — a brand never
+    ///         has to hold ETH. `setSubnodeOwner` alone sets an owner but not a
+    ///         resolver, so without this the name would not resolve at all.
     function registerReserved(
         string calldata label,
         address owner,
@@ -227,7 +349,19 @@ contract SimplexController is
         bytes32 labelhash = keccak256(bytes(label));
         if (!reservedNames[labelhash]) revert NameNotReserved(label);
         if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
-        base.registerWithLabel(label, owner, duration);
+
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+        _retireStaleRecords(namehash);
+
+        address resolver = defaultResolver;
+        if (resolver == address(0)) {
+            base.registerWithLabel(label, owner, duration);
+            return;
+        }
+
+        base.registerWithLabel(label, address(this), duration);
+        ens.setRecord(namehash, owner, resolver, 0);
+        base.transferFrom(address(this), owner, uint256(labelhash));
     }
 
     function disableNftGate() external onlyOwner {
@@ -236,22 +370,13 @@ contract SimplexController is
         emit NftGateDisabled();
     }
 
-    /// @notice Swap the active price oracle. Reverts after `freezePriceOracle`
-    ///         has been called so the contract can graduate to immutable
-    ///         pricing without a full UUPS upgrade.
-    function setPriceOracle(IPriceOracle newOracle) external onlyOwner {
-        if (priceOracleFrozen) revert PriceOracleAlreadyFrozen();
+    /// @notice Swap the active price oracle. Survives `freeze`, and must: the
+    ///         Chainlink feed is immutable inside the oracle, so a retired feed
+    ///         would otherwise end registration and renewal permanently.
+    function setPriceOracle(IPriceOracleUSD newOracle) external onlyOwner {
         if (address(newOracle) == address(0)) revert ZeroAddress();
         prices = newOracle;
         emit PriceOracleChanged(newOracle);
-    }
-
-    /// @notice One-way: permanently disables `setPriceOracle`. Matches the
-    ///         renounce-later pattern used for the NFT gate.
-    function freezePriceOracle() external onlyOwner {
-        if (priceOracleFrozen) revert PriceOracleAlreadyFrozen();
-        priceOracleFrozen = true;
-        emit PriceOracleFrozen();
     }
 
     // --- ENS controller functions (unchanged logic, added gates) ---
@@ -268,11 +393,15 @@ contract SimplexController is
         return label.strlen() >= minCharLength;
     }
 
+    /// @notice Whether `label` can actually be registered. Reserved names are
+    ///         included: they are refused at registration, so reporting them as
+    ///         available would have a caller burn a commitment and wait out
+    ///         `minCommitmentAge` only to revert `NameReserved`.
     function available(
         string calldata label
     ) public view override returns (bool) {
         bytes32 labelhash = keccak256(bytes(label));
-        return _available(label, labelhash);
+        return _available(label, labelhash) && !reservedNames[labelhash];
     }
 
     function makeCommitment(
@@ -281,8 +410,11 @@ contract SimplexController is
         if (registration.data.length > 0 && registration.resolver == address(0))
             revert ResolverRequiredWhenDataSupplied();
 
-        if (registration.reverseRecord != 0 && registration.resolver == address(0))
-            revert ResolverRequiredForReverseRecord();
+        // `.simplex` runs no reverse registrar: nothing here resolves an address
+        // back to a name, so the upstream struct field is refused rather than
+        // silently dropped. Keeping the field keeps IETHRegistrarController's
+        // ABI intact for tooling that encodes against it.
+        if (registration.reverseRecord != 0) revert ReverseRecordNotSupported();
 
         if (registration.duration < MIN_REGISTRATION_DURATION)
             revert DurationTooShort(registration.duration);
@@ -297,19 +429,78 @@ contract SimplexController is
         commitments[commitment] = block.timestamp;
     }
 
-    function _checkSimplexGates(string calldata label) internal view {
+    /// @param checkNft Skipped on the credited path, where `msg.sender` is the
+    ///        registrar rather than the buyer.
+    function _checkSimplexGates(
+        string calldata label,
+        bool checkNft
+    ) internal view {
         if (label.strlen() < minCharLength)
             revert NameTooShort(label, minCharLength);
         if (reservedNames[keccak256(bytes(label))])
             revert NameReserved(label);
-        if (nftGateEnabled && smpxNft.balanceOf(msg.sender) == 0)
+        if (checkNft && nftGateEnabled && smpxNft.balanceOf(msg.sender) == 0)
             revert NftRequired();
     }
 
+    /// @dev Deduct `amountUSD` from the caller's spending limit. The beneficiary
+    ///      can zero that limit in one transaction, which is the kill switch for a
+    ///      compromised registrar.
+    function _spendAllowance(uint256 amountUSD) private {
+        uint256 available = registrarAllowance[msg.sender];
+        if (amountUSD > available)
+            revert InsufficientAllowance(amountUSD, available);
+        uint256 remaining;
+        unchecked {
+            remaining = available - amountUSD;
+        }
+        registrarAllowance[msg.sender] = remaining;
+        emit RegistrarAllowanceSpent(msg.sender, amountUSD, remaining);
+    }
+
+    /// @dev The list price of `label` for `duration`, in attoUSD.
+    /// @dev A re-registered name must not inherit the previous owner's records.
+    ///      Nothing clears them on expiry: the registry keeps the node's resolver
+    ///      pointer and the resolver keeps its data, so without this a squatter
+    ///      could point `simplex.contact` at their own link, let the name lapse,
+    ///      and keep receiving the next owner's conversations.
+    ///
+    ///      `clearRecords` bumps the node's record version, invalidating every
+    ///      key in one write, and the controller is `trustedETHController` so it
+    ///      is authorised. Only the default resolver is touched: calling into an
+    ///      arbitrary user-supplied resolver could revert and brick the
+    ///      registration. A node whose previous owner pointed it at some other
+    ///      resolver keeps that pointer unless the new registration supplies one
+    ///      — see docs/security.md.
+    ///
+    ///      A first registration is a no-op: the node has no resolver yet.
+    function _retireStaleRecords(bytes32 node) private {
+        address stale = ens.resolver(node);
+        if (stale != address(0) && wasDefaultResolver[stale]) {
+            IClearableResolver(stale).clearRecords(node);
+        }
+    }
+
+    function _rentPriceUSD(
+        string calldata label,
+        bytes32 labelhash,
+        uint256 duration
+    ) private view returns (IPriceOracle.Price memory) {
+        return
+            prices.priceUSD(
+                label,
+                base.nameExpires(uint256(labelhash)),
+                duration
+            );
+    }
+
+    /// @notice Register and pay. Gated by the public sales switch; the credited
+    ///         and reserved paths are not.
     function register(
         Registration calldata registration
     ) public payable override nonReentrant {
-        _checkSimplexGates(registration.label);
+        if (!publicSalesOpen) revert PublicSalesClosed();
+        _checkSimplexGates(registration.label, true);
 
         bytes32 labelhash = keccak256(bytes(registration.label));
         IPriceOracle.Price memory price = _rentPrice(
@@ -320,6 +511,45 @@ contract SimplexController is
         uint256 totalPrice = price.base + price.premium;
         if (msg.value < totalPrice) revert InsufficientValue();
 
+        _registerCore(registration, labelhash, price);
+
+        if (msg.value > totalPrice) {
+            (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
+            if (!ok) revert TransferFailed();
+        }
+    }
+
+    /// @notice Register with no value attached, spending one registrar credit.
+    ///         The fee would have gone to the controller and been withdrawn back
+    ///         to the same treasury, so it is removed rather than performed.
+    function registerWithCredit(
+        Registration calldata registration
+    ) external nonReentrant {
+        _checkSimplexGates(registration.label, false);
+
+        bytes32 labelhash = keccak256(bytes(registration.label));
+        IPriceOracle.Price memory usd = _rentPriceUSD(
+            registration.label,
+            labelhash,
+            registration.duration
+        );
+        _spendAllowance(usd.base + usd.premium);
+
+        // Zero cost in the event, and no `_rentPrice` call: nothing is paid on
+        // this path, so the wei figure would be a quote rather than a payment —
+        // and reading it would couple the sponsored flow to the ETH/USD feed,
+        // which is the one dependency this path exists without. What was
+        // actually consumed is in `RegistrarAllowanceSpent`, in attoUSD.
+        _registerCore(registration, labelhash, IPriceOracle.Price(0, 0));
+    }
+
+    /// @dev Everything both registration paths share: availability, the
+    ///      commit/reveal window, the mint and the records.
+    function _registerCore(
+        Registration calldata registration,
+        bytes32 labelhash,
+        IPriceOracle.Price memory price
+    ) private returns (uint256 expires) {
         if (!_available(registration.label, labelhash))
             revert NameNotAvailable(registration.label);
 
@@ -344,7 +574,12 @@ contract SimplexController is
 
         delete (commitments[commitment]);
 
-        uint256 expires;
+        bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
+
+        // Before the mint and before any new record is written: clearing after
+        // `multicallWithNodeCheck` would wipe the records this registration just
+        // set, since the version bump invalidates every key at once.
+        _retireStaleRecords(namehash);
 
         if (registration.resolver == address(0)) {
             expires = base.registerWithLabel(
@@ -359,7 +594,6 @@ contract SimplexController is
                 registration.duration
             );
 
-            bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
             ens.setRecord(
                 namehash,
                 registration.owner,
@@ -377,19 +611,6 @@ contract SimplexController is
                 registration.owner,
                 uint256(labelhash)
             );
-
-            if (registration.reverseRecord & REVERSE_RECORD_ETHEREUM_BIT != 0)
-                reverseRegistrar.setNameForAddr(
-                    msg.sender,
-                    msg.sender,
-                    registration.resolver,
-                    string.concat(registration.label, tldSuffix)
-                );
-            if (registration.reverseRecord & REVERSE_RECORD_DEFAULT_BIT != 0)
-                defaultReverseRegistrar.setNameForAddr(
-                    msg.sender,
-                    string.concat(registration.label, tldSuffix)
-                );
         }
 
         emit NameRegistered(
@@ -401,11 +622,6 @@ contract SimplexController is
             expires,
             registration.referrer
         );
-
-        if (msg.value > totalPrice) {
-            (bool ok, ) = payable(msg.sender).call{value: msg.value - totalPrice}("");
-            if (!ok) revert TransferFailed();
-        }
     }
 
     function renew(
@@ -418,9 +634,7 @@ contract SimplexController is
         IPriceOracle.Price memory price = _rentPrice(label, labelhash, duration);
         if (msg.value < price.base) revert InsufficientValue();
 
-        uint256 expires = base.renew(uint256(labelhash), duration);
-
-        emit NameRenewed(label, labelhash, price.base, expires, referrer);
+        _renewCore(label, labelhash, duration, price.base, referrer);
 
         if (msg.value > price.base) {
             (bool ok, ) = payable(msg.sender).call{value: msg.value - price.base}("");
@@ -428,8 +642,39 @@ contract SimplexController is
         }
     }
 
+    /// @notice Renew with no value attached, spending one registrar credit.
+    function renewWithCredit(
+        string calldata label,
+        uint256 duration,
+        bytes32 referrer
+    ) external nonReentrant {
+        bytes32 labelhash = keccak256(bytes(label));
+        // Base only, matching the payable `renew`, which charges `price.base`.
+        // The premium is the expired-name auction price and is owed on
+        // re-registration, never on renewing a name you already hold.
+        _spendAllowance(_rentPriceUSD(label, labelhash, duration).base);
+        // zero cost, and no feed read — see `registerWithCredit`
+        _renewCore(label, labelhash, duration, 0, referrer);
+    }
+
+    function _renewCore(
+        string calldata label,
+        bytes32 labelhash,
+        uint256 duration,
+        uint256 cost,
+        bytes32 referrer
+    ) private returns (uint256 expires) {
+        expires = base.renew(uint256(labelhash), duration);
+
+        emit NameRenewed(label, labelhash, cost, expires, referrer);
+    }
+
+    /// @notice Pays the beneficiary, never `owner()`, so revenue is independent of
+    ///         the admin key. Permissionless to call.
     function withdraw() public nonReentrant {
-        (bool ok, ) = payable(owner()).call{value: address(this).balance}("");
+        address payee = beneficiary;
+        if (payee == address(0)) revert ZeroAddress();
+        (bool ok, ) = payable(payee).call{value: address(this).balance}("");
         if (!ok) revert TransferFailed();
     }
 
@@ -471,5 +716,30 @@ contract SimplexController is
     // new state variables land here.
     // 49 -> 48 when `_reentrancyStatus` was added (reentrancy guard).
     uint256 private _reentrancyStatus;
-    uint256[48] private __gap;
+
+    // --- names v2: governance, allowance and pricing. 48 -> 45. ---
+    // Slot 1: beneficiary + frozen pack together.
+    /// @dev Guardian key: the registrar allowance, the sales switch, and `withdraw`'s payee.
+    address public beneficiary;
+    /// @dev One-way. Blocks upgrades and the sales switch; nothing else.
+    bool public frozen;
+    /// @dev Spending limit per registrar, in attoUSD. A sponsored registration or
+    ///      renewal deducts the name's own list price. Denominated in the unit the
+    ///      price list is configured in, so it does not move with the ETH price.
+    mapping(address => uint256) public registrarAllowance;
+    // Slot 3: defaultResolver + publicSalesOpen pack together.
+    /// @dev The resolver `registerReserved` points a brand's name at.
+    address public defaultResolver;
+    /// @dev Gates the payable path only. Credited and reserved registrations ignore it.
+    bool public publicSalesOpen;
+    /// @dev Every resolver that has ever been the default, never cleared. The
+    ///      set this contract may call `clearRecords` on: each entry is a
+    ///      resolver we deployed and that trusts this controller, so the call
+    ///      cannot revert or burn the caller's gas. Testing `== defaultResolver`
+    ///      instead would silently stop retiring records the moment the default
+    ///      was rotated, quietly reopening the stale-record leak for every name
+    ///      still pointing at the old one.
+    mapping(address => bool) public wasDefaultResolver;
+
+    uint256[44] private __gap;
 }

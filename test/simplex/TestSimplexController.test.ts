@@ -20,8 +20,6 @@ async function deploySimplexControllerProxy(args: {
   prices: `0x${string}`
   minCommitmentAge: bigint
   maxCommitmentAge: bigint
-  reverseRegistrar: `0x${string}`
-  defaultReverseRegistrar: `0x${string}`
   ens: `0x${string}`
   config: {
     tldNode: `0x${string}`
@@ -44,8 +42,6 @@ async function deploySimplexControllerProxy(args: {
       args.prices,
       args.minCommitmentAge,
       args.maxCommitmentAge,
-      args.reverseRegistrar,
-      args.defaultReverseRegistrar,
       args.ens,
       args.config,
       args.ownerAddress,
@@ -80,25 +76,6 @@ async function fixture() {
     'BaseRegistrarImplementation',
     [ensRegistry.address, namehash('testing')],
   )
-  const reverseRegistrar = await connection.viem.deployContract(
-    'ReverseRegistrar',
-    [ensRegistry.address],
-  )
-  const defaultReverseRegistrar = await connection.viem.deployContract(
-    'DefaultReverseRegistrar',
-    [],
-  )
-
-  await ensRegistry.write.setSubnodeOwner([
-    zeroHash,
-    labelhash('reverse'),
-    ownerAccount.address,
-  ])
-  await ensRegistry.write.setSubnodeOwner([
-    namehash('reverse'),
-    labelhash('addr'),
-    reverseRegistrar.address,
-  ])
   await ensRegistry.write.setSubnodeOwner([
     zeroHash,
     labelhash('testing'),
@@ -122,8 +99,6 @@ async function fixture() {
       prices: priceOracle.address,
       minCommitmentAge: 600n,
       maxCommitmentAge: 86400n,
-      reverseRegistrar: reverseRegistrar.address,
-      defaultReverseRegistrar: defaultReverseRegistrar.address,
       ens: ensRegistry.address,
       config: {
         tldNode: namehash('testing'),
@@ -136,17 +111,13 @@ async function fixture() {
     })
 
   await baseRegistrar.write.addController([controller.address])
-  await reverseRegistrar.write.setController([controller.address, true])
-  await defaultReverseRegistrar.write.setController([
-    controller.address,
-    true,
-  ])
-
+  // The payable path is gated by the public sales switch, which ships closed.
+  await controller.write.setPublicSalesOpen([true], {
+    account: ownerAccount,
+  })
   return {
     ensRegistry,
     baseRegistrar,
-    reverseRegistrar,
-    defaultReverseRegistrar,
     dummyOracle,
     priceOracle,
     controller,
@@ -332,7 +303,7 @@ describe('SimplexController', () => {
         controller.write.addReservedNames([['simplex']], {
           account: registrantAccount,
         }),
-      ).toBeRevertedWithString('Ownable: caller is not the owner')
+      ).toBeRevertedWithCustomError('NotOwnerOrBeneficiary')
     })
 
     it('reserves and unreserves many names in a single transaction', async () => {
@@ -467,25 +438,7 @@ describe('SimplexController', () => {
         'BaseRegistrarImplementation',
         [ensRegistry.address, namehash('simplex')],
       )
-      const reverseRegistrar = await connection.viem.deployContract(
-        'ReverseRegistrar',
-        [ensRegistry.address],
-      )
-      const defaultReverseRegistrar = await connection.viem.deployContract(
-        'DefaultReverseRegistrar',
-        [],
-      )
 
-      await ensRegistry.write.setSubnodeOwner([
-        zeroHash,
-        labelhash('reverse'),
-        ownerAccount.address,
-      ])
-      await ensRegistry.write.setSubnodeOwner([
-        namehash('reverse'),
-        labelhash('addr'),
-        reverseRegistrar.address,
-      ])
       await ensRegistry.write.setSubnodeOwner([
         zeroHash,
         labelhash('simplex'),
@@ -505,8 +458,6 @@ describe('SimplexController', () => {
         prices: priceOracle.address,
         minCommitmentAge: 600n,
         maxCommitmentAge: 86400n,
-        reverseRegistrar: reverseRegistrar.address,
-        defaultReverseRegistrar: defaultReverseRegistrar.address,
         ens: ensRegistry.address,
         config: {
           tldNode: namehash('simplex'),
@@ -519,11 +470,9 @@ describe('SimplexController', () => {
       })
 
       await baseRegistrar.write.addController([controller.address])
-      await reverseRegistrar.write.setController([controller.address, true])
-      await defaultReverseRegistrar.write.setController([
-        controller.address,
-        true,
-      ])
+      await controller.write.setPublicSalesOpen([true], {
+        account: ownerAccount,
+      })
 
       return { controller, baseRegistrar }
     }
@@ -567,7 +516,7 @@ describe('SimplexController', () => {
 
   describe('UUPS upgradeability', () => {
     it('re-initializing the proxy reverts', async () => {
-      const { controller, baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
+      const { controller, baseRegistrar, priceOracle, ensRegistry, mockNft } =
         await loadFixture()
       await expect(
         controller.write.initialize(
@@ -576,8 +525,6 @@ describe('SimplexController', () => {
             priceOracle.address,
             600n,
             86400n,
-            reverseRegistrar.address,
-            defaultReverseRegistrar.address,
             ensRegistry.address,
             {
               tldNode: namehash('testing'),
@@ -594,7 +541,7 @@ describe('SimplexController', () => {
     })
 
     it('implementation contract cannot be initialized directly', async () => {
-      const { implementation, baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
+      const { implementation, baseRegistrar, priceOracle, ensRegistry, mockNft } =
         await loadFixture()
       // The constructor of SimplexController calls _disableInitializers().
       // Anyone calling initialize() on the implementation directly must revert.
@@ -605,8 +552,6 @@ describe('SimplexController', () => {
             priceOracle.address,
             600n,
             86400n,
-            reverseRegistrar.address,
-            defaultReverseRegistrar.address,
             ensRegistry.address,
             {
               tldNode: namehash('testing'),
@@ -680,11 +625,11 @@ describe('SimplexController', () => {
   })
 
   describe('Refund / withdraw to smart-contract receiver (M-1)', () => {
-    it('withdraw succeeds when owner is a contract with a non-trivial fallback', async () => {
-      const { controller, baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
+    it('withdraw succeeds when the beneficiary is a contract with a non-trivial fallback', async () => {
+      const { controller, baseRegistrar, priceOracle, ensRegistry, mockNft } =
         await loadFixture()
 
-      // Build a fresh proxy whose owner is a contract whose receive()
+      // Build a fresh proxy whose beneficiary is a contract whose receive()
       // does an SSTORE (>2300 gas). The earlier `.transfer()` would
       // have reverted; the `.call{value:}` form must succeed.
       const gasHog = await connection.viem.deployContract('GasHogReceiver', [])
@@ -693,8 +638,6 @@ describe('SimplexController', () => {
         prices: priceOracle.address,
         minCommitmentAge: 600n,
         maxCommitmentAge: 86400n,
-        reverseRegistrar: reverseRegistrar.address,
-        defaultReverseRegistrar: defaultReverseRegistrar.address,
         ens: ensRegistry.address,
         config: {
           tldNode: namehash('testing'),
@@ -703,7 +646,10 @@ describe('SimplexController', () => {
           smpxNft: mockNft.address,
           nftGateEnabled: true,
         },
-        ownerAddress: gasHog.address,
+        ownerAddress: ownerAccount.address,
+      })
+      await gasHogOwnedController.write.setBeneficiary([gasHog.address], {
+        account: ownerAccount,
       })
 
       // Seed the controller with some balance; anyone may trigger withdraw.
@@ -857,7 +803,7 @@ describe('SimplexController', () => {
     it('reverts when _maxCommitmentAge exceeds 30 days', async () => {
       // 30 days + 1 second
       const tooHigh = 30n * 86400n + 1n
-      const { baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
+      const { baseRegistrar, priceOracle, ensRegistry, mockNft } =
         await loadFixture()
       await expect(
         deploySimplexControllerProxy({
@@ -865,8 +811,6 @@ describe('SimplexController', () => {
           prices: priceOracle.address,
           minCommitmentAge: 600n,
           maxCommitmentAge: tooHigh,
-          reverseRegistrar: reverseRegistrar.address,
-          defaultReverseRegistrar: defaultReverseRegistrar.address,
           ens: ensRegistry.address,
           config: {
             tldNode: namehash('testing'),
@@ -882,15 +826,13 @@ describe('SimplexController', () => {
 
     it('accepts _maxCommitmentAge at exactly 30 days', async () => {
       const exact = 30n * 86400n
-      const { baseRegistrar, priceOracle, reverseRegistrar, defaultReverseRegistrar, ensRegistry, mockNft } =
+      const { baseRegistrar, priceOracle, ensRegistry, mockNft } =
         await loadFixture()
       const { controller } = await deploySimplexControllerProxy({
         base: baseRegistrar.address,
         prices: priceOracle.address,
         minCommitmentAge: 600n,
         maxCommitmentAge: exact,
-        reverseRegistrar: reverseRegistrar.address,
-        defaultReverseRegistrar: defaultReverseRegistrar.address,
         ens: ensRegistry.address,
         config: {
           tldNode: namehash('testing'),
@@ -905,7 +847,7 @@ describe('SimplexController', () => {
     })
   })
 
-  describe('Price oracle admin (setPriceOracle / freezePriceOracle)', () => {
+  describe('Price oracle admin (setPriceOracle)', () => {
     it('owner can swap the price oracle', async () => {
       const { controller, dummyOracle } = await loadFixture()
       // Deploy a second oracle (different prices) to swap to.
@@ -941,42 +883,6 @@ describe('SimplexController', () => {
           account: ownerAccount,
         }),
       ).toBeRevertedWithCustomError('ZeroAddress')
-    })
-
-    it('owner can freeze the price oracle (one-way)', async () => {
-      const { controller } = await loadFixture()
-      expect(await controller.read.priceOracleFrozen()).toBe(false)
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      expect(await controller.read.priceOracleFrozen()).toBe(true)
-    })
-
-    it('rejects non-owner freezePriceOracle', async () => {
-      const { controller } = await loadFixture()
-      await expect(
-        controller.write.freezePriceOracle([], { account: registrantAccount }),
-      ).toBeRevertedWithString('Ownable: caller is not the owner')
-    })
-
-    it('setPriceOracle reverts after freeze', async () => {
-      const { controller, dummyOracle } = await loadFixture()
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      const newStable = await connection.viem.deployContract(
-        'StablePriceOracle',
-        [dummyOracle.address, [0n, 0n, 0n, 0n, 0n]],
-      )
-      await expect(
-        controller.write.setPriceOracle([newStable.address], {
-          account: ownerAccount,
-        }),
-      ).toBeRevertedWithCustomError('PriceOracleAlreadyFrozen')
-    })
-
-    it('double-freeze reverts', async () => {
-      const { controller } = await loadFixture()
-      await controller.write.freezePriceOracle([], { account: ownerAccount })
-      await expect(
-        controller.write.freezePriceOracle([], { account: ownerAccount }),
-      ).toBeRevertedWithCustomError('PriceOracleAlreadyFrozen')
     })
 
     it('registration uses the new oracle after a swap', async () => {
@@ -1119,16 +1025,12 @@ describe('SimplexController', () => {
     return p.base + p.premium
   }
 
-  const deployPublicResolver = async (
-    controller: any,
-    ensRegistry: any,
-    reverseRegistrar: any,
-  ) =>
+  const deployPublicResolver = async (controller: any, ensRegistry: any) =>
     connection.viem.deployContract('PublicResolver', [
       ensRegistry.address,
       zeroAddress,
       controller.address, // trustedETHController — lets the controller write records
-      reverseRegistrar.address,
+      zeroAddress, // trustedReverseRegistrar: unused, inert at address(0)
     ])
 
   describe('Commit-reveal error branches', () => {
@@ -1200,16 +1102,20 @@ describe('SimplexController', () => {
       ).toBeRevertedWithCustomError('ResolverRequiredWhenDataSupplied')
     })
 
-    it('makeCommitment reverts ResolverRequiredForReverseRecord (reverseRecord, no resolver)', async () => {
+    it('makeCommitment reverts ReverseRecordNotSupported for any reverse bit', async () => {
       const { controller } = await loadFixture()
-      await expect(
-        controller.read.makeCommitment([mkReg({ reverseRecord: 1 })]),
-      ).toBeRevertedWithCustomError('ResolverRequiredForReverseRecord')
+      // this deployment runs no reverse registrar, so the upstream struct field
+      // is refused rather than silently dropped — with or without a resolver
+      for (const bit of [1, 2, 3]) {
+        await expect(
+          controller.read.makeCommitment([mkReg({ reverseRecord: bit })]),
+        ).toBeRevertedWithCustomError('ReverseRecordNotSupported')
+      }
     })
 
     it('registers with a resolver and empty data (sets the resolver in the registry)', async () => {
-      const { controller, ensRegistry, reverseRegistrar } = await loadFixture()
-      const resolver = await deployPublicResolver(controller, ensRegistry, reverseRegistrar)
+      const { controller, ensRegistry } = await loadFixture()
+      const resolver = await deployPublicResolver(controller, ensRegistry)
       const registration = mkReg({ label: 'resolvonly', resolver: resolver.address })
       await commitWait(controller, registration)
       await controller.write.register([registration], {
@@ -1226,8 +1132,8 @@ describe('SimplexController', () => {
     })
 
     it('registers with a resolver and writes a record via multicallWithNodeCheck', async () => {
-      const { controller, ensRegistry, reverseRegistrar } = await loadFixture()
-      const resolver = await deployPublicResolver(controller, ensRegistry, reverseRegistrar)
+      const { controller, ensRegistry } = await loadFixture()
+      const resolver = await deployPublicResolver(controller, ensRegistry)
       const node = namehash('resolvdata.testing')
       const { encodeFunctionData } = await import('viem')
       const setAddrAbi = [
@@ -1273,24 +1179,18 @@ describe('SimplexController', () => {
       ['DEFAULT', 2],
       ['both', 3],
     ] as const) {
-      it(`registers with reverseRecord ${name} bit set`, async () => {
-        const { controller, ensRegistry, reverseRegistrar } = await loadFixture()
-        const resolver = await deployPublicResolver(controller, ensRegistry, reverseRegistrar)
-        const label = `rev${bit}name`
-        const registration = mkReg({
-          label,
-          resolver: resolver.address,
-          reverseRecord: bit,
-        })
-        await commitWait(controller, registration)
-        await controller.write.register([registration], {
-          account: registrantAccount,
-          value: await totalPrice(controller, label),
-        })
-        // Register completed past the reverse-record branch → forward record set.
-        expect((await ensRegistry.read.owner([namehash(`${label}.testing`)])).toLowerCase()).toBe(
-          registrantAccount.address.toLowerCase(),
-        )
+      it(`refuses a registration carrying the ${name} reverse bit`, async () => {
+        const { controller, ensRegistry } = await loadFixture()
+        const resolver = await deployPublicResolver(controller, ensRegistry)
+        await expect(
+          controller.read.makeCommitment([
+            mkReg({
+              label: `rev${bit}name`,
+              resolver: resolver.address,
+              reverseRecord: bit,
+            }),
+          ]),
+        ).toBeRevertedWithCustomError('ReverseRecordNotSupported')
       })
     }
   })
@@ -1379,6 +1279,9 @@ describe('SimplexController', () => {
 
     it('withdraw succeeds with a zero balance', async () => {
       const { controller } = await loadFixture()
+      await controller.write.setBeneficiary([ownerAccount.address], {
+        account: ownerAccount,
+      })
       expect(await publicClient.getBalance({ address: controller.address })).toBe(0n)
       await controller.write.withdraw({ account: ownerAccount })
       expect(await publicClient.getBalance({ address: controller.address })).toBe(0n)
@@ -1444,8 +1347,6 @@ describe('SimplexController', () => {
       prices: f.priceOracle.address,
       minCommitmentAge: 600n,
       maxCommitmentAge: 86400n,
-      reverseRegistrar: f.reverseRegistrar.address,
-      defaultReverseRegistrar: f.defaultReverseRegistrar.address,
       ens: f.ensRegistry.address,
       config: {
         tldNode: namehash('testing'),
@@ -1514,12 +1415,15 @@ describe('SimplexController', () => {
       ).toBeRevertedWithString('Ownable: caller is not the owner')
     })
 
-    it('withdraw reverts TransferFailed when the owner rejects ETH', async () => {
+    it('withdraw reverts TransferFailed when the beneficiary rejects ETH', async () => {
       const f = await loadFixture()
       const rejecter = await connection.viem.deployContract('RejectEther', [])
       const { controller } = await deploySimplexControllerProxy({
         ...depsFrom(f),
-        ownerAddress: rejecter.address,
+        ownerAddress: ownerAccount.address,
+      })
+      await controller.write.setBeneficiary([rejecter.address], {
+        account: ownerAccount,
       })
       await testClient.setBalance({
         address: controller.address,

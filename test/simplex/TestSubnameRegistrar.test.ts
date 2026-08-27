@@ -36,36 +36,20 @@ async function fixture() {
     labelhash('alice'),
     aliceAccount.address,
   ])
-  // Reverse namespace + registrar — the verbatim PublicResolver's ReverseClaimer
-  // constructor looks up the reverse registrar via the registry and claims a
-  // reverse record, so this must exist before the resolver is deployed.
-  await ensRegistry.write.setSubnodeOwner([
-    zeroHash,
-    labelhash('reverse'),
-    ownerAccount.address,
-  ])
-  const reverseRegistrar = await connection.viem.deployContract(
-    'ReverseRegistrar',
-    [ensRegistry.address],
-  )
-  await ensRegistry.write.setSubnodeOwner([
-    namehash('reverse'),
-    labelhash('addr'),
-    reverseRegistrar.address,
-  ])
   // SubnameRegistrar(ens, baseRegistrar). ownerAccount stands in as the
   // BaseRegistrar so tests can drive onReregister directly.
   const subnames = await connection.viem.deployContract('SubnameRegistrar', [
     ensRegistry.address,
     ownerAccount.address,
   ])
-  // The verbatim PublicResolver, wired with nameWrapper = subnames so it
-  // authorises subname records against subnames.ownerOf.
-  const resolver = await connection.viem.deployContract('PublicResolver', [
+  // SimplexResolver, wired with nameWrapper = subnames so it authorises subname
+  // records against subnames.ownerOf. It is the deployed resolver, and the
+  // registrar needs its clearSubnameRecords to retire records on delete/purge.
+  const resolver = await connection.viem.deployContract('SimplexResolver', [
     ensRegistry.address,
     subnames.address,
     zeroAddress,
-    reverseRegistrar.address,
+    zeroAddress,
   ])
   await subnames.write.setResolver([resolver.address])
   return { ensRegistry, subnames, resolver }
