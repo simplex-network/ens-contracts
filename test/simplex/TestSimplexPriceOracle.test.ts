@@ -392,6 +392,24 @@ describe('SimplexPriceOracle', () => {
       expect(await premiumAt(oracle, 7n * DAY)).toBe(0n)
     })
 
+    it('runs the documented $1,024-over-10-days example', async () => {
+      const { oracle } = await loadPremium()
+      await oracle.write.setPremium([1024n * USD, 10n], { account: owner })
+      expect(await oracle.read.endValue()).toBe(USD)
+      const table: [bigint, bigint][] = [
+        [0n, 1023n],
+        [DAY, 511n],
+        [2n * DAY, 255n],
+        [5n * DAY, 31n],
+        [9n * DAY, 1n],
+        [10n * DAY, 0n],
+        [11n * DAY, 0n],
+      ]
+      for (const [elapsed, dollars] of table) {
+        expect(await premiumAt(oracle, elapsed)).toBe(dollars * USD)
+      }
+    })
+
     it('is switched off by a zero decay window', async () => {
       const { oracle } = await loadPremium()
       await oracle.write.setPremium([START_PREMIUM, 0n], { account: owner })
