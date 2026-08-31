@@ -11,7 +11,8 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import {
   FAR_FUTURE,
-  PRICE_CURVE,
+  PRICE_BASE,
+  PRICE_RUNGS,
   signIntent,
   YEAR,
   yearPriceUSD,
@@ -113,9 +114,12 @@ describe('launch lifecycle', () => {
         [ens.address, TLD_NODE],
       )
       dummyOracle = await viem.deployContract('DummyOracle', [100000000n])
-      priceOracle = await viem.deployContract('StablePriceOracle', [
+      priceOracle = await viem.deployContract('SimplexPriceOracle', [
         dummyOracle.address,
-        PRICE_CURVE,
+        PRICE_BASE,
+        PRICE_RUNGS,
+        0n, // startPremium
+        0n, // totalDays
       ])
       renderer = await viem.deployContract('MetadataRenderer', [`.${TLD}`])
 
@@ -887,8 +891,8 @@ describe('launch lifecycle', () => {
 
     it('the namespace can still survive its own price feed', async () => {
       const replacement = await connection.viem.deployContract(
-        'StablePriceOracle',
-        [dummyOracle.address, PRICE_CURVE],
+        'SimplexPriceOracle',
+        [dummyOracle.address, PRICE_BASE, PRICE_RUNGS, 0n, 0n],
       )
       await controller.write.setPriceOracle([replacement.address], {
         account: admin,

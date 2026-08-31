@@ -1,7 +1,27 @@
 import hre from 'hardhat'
 import { describe, expect, it } from 'vitest'
 
-import { PRICE_CURVE, YEAR, yearPriceUSD } from './fixtures/namesV2.js'
+import { YEAR } from './fixtures/namesV2.js'
+
+/**
+ * This file covers the *vendored* `StablePriceOracle`, which `.testing` still
+ * runs and which keeps SNRC's `price6Letter`, `priceUSD` and `InvalidPriceFeed`
+ * additions. Its curve is attoUSD per second and fixed at construction, so it no
+ * longer shares constants with the `.simplex` fixture, which moved to
+ * `SimplexPriceOracle`. See `TestSimplexPriceOracle.test.ts` for that one.
+ */
+const perSecond = (usd: bigint) => (usd * 10n ** 18n) / YEAR
+const BASE = perSecond(10n)
+const PRICE_CURVE = [
+  BASE * 100000n,
+  BASE * 10000n,
+  BASE * 1000n,
+  BASE * 100n,
+  BASE * 10n,
+  BASE,
+] as const
+const yearPriceUSD = (len: number, years = 1n) =>
+  PRICE_CURVE[len >= 6 ? 5 : len - 1] * YEAR * years
 
 const connection = await hre.network.connect()
 
