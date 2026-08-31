@@ -47,21 +47,30 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     uint256 private constant GRACE_PERIOD = 90 days;
 
     AggregatorInterface public usdOracle;
+    /// @dev `10 ** decimals` of the feed above, the divisor `price()` converts
+    ///      through. Chainlink's ETH/USD feeds are 8, but `AggregatorInterface`
+    ///      exposes no `decimals()`, so a replacement feed's scale cannot be read
+    ///      and has to be stated. Getting it wrong misprices every name by orders
+    ///      of magnitude without reverting, which is why it is an explicit
+    ///      argument rather than a constant.
+    uint256 public usdOracleScale;
 
     /// @dev attoUSD per year for every length above `topRung`.
     uint256 public basePriceUSDPerYear;
     /// @dev The tallest configured rung. Zero means the base price applies to
     ///      every length.
     uint256 public topRung;
-    /// @dev The rung list, expanded. Authoritative for lengths 1..`topRung`.
-    mapping(uint256 => uint256) public priceUSDPerYearByLength;
+    /// @dev The rung list, expanded. Meaningful only for lengths 1..`topRung`:
+    ///      `setPrices` leaves entries above it stale rather than paying to clear
+    ///      them. Read it through `priceUSDPerYear`, which applies that gate.
+    mapping(uint256 => uint256) private _priceByLength;
 
     uint256 public startPremium;
     uint256 public totalDays;
     uint256 public endValue;
 
     event PricesChanged(uint256 basePriceUSDPerYear, Rung[] rungs);
-    event UsdOracleChanged(address indexed usdOracle);
+    event UsdOracleChanged(address indexed usdOracle, uint8 decimals);
     event PremiumChanged(uint256 startPremium, uint256 totalDays);
 
     /// @dev The feed reported zero or a negative price. Zero would panic on the
@@ -69,6 +78,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     ///      every quote to zero, handing out free names. Both fail loudly instead.
     error InvalidPriceFeed(int256 answer);
     error ZeroAddress();
+    error InvalidFeedDecimals(uint8 decimals);
     error RungLengthOutOfRange(uint256 maxLength);
     error RungLengthsNotAscending(uint256 index);
     error RungPricesNotDescending(uint256 index);
@@ -76,12 +86,13 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
 
     constructor(
         AggregatorInterface _usdOracle,
+        uint8 _usdOracleDecimals,
         uint256 _basePriceUSDPerYear,
         Rung[] memory _rungs,
         uint256 _startPremium,
         uint256 _totalDays
     ) {
-        _setUsdOracle(_usdOracle);
+        _setUsdOracle(_usdOracle, _usdOracleDecimals);
         _setPrices(_basePriceUSDPerYear, _rungs);
         _setPremium(_startPremium, _totalDays);
     }
@@ -104,8 +115,14 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     /// @notice Point the oracle at a different ETH/USD feed. `StablePriceOracle`
     ///         holds this `immutable`, which is why a retired feed forces a
     ///         redeploy there.
-    function setUsdOracle(AggregatorInterface newOracle) external onlyOwner {
-        _setUsdOracle(newOracle);
+    /// @param decimals The new feed's scale. Must be stated: the interface has no
+    ///        `decimals()` to read it from, and a wrong value silently misprices
+    ///        every name rather than reverting.
+    function setUsdOracle(
+        AggregatorInterface newOracle,
+        uint8 decimals
+    ) external onlyOwner {
+        _setUsdOracle(newOracle, decimals);
     }
 
     /// @notice Retune the Dutch auction. `newTotalDays == 0` makes `endValue`
@@ -118,6 +135,15 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         _setPremium(newStartPremium, newTotalDays);
     }
 
+    /// @notice The configured yearly price for a label of `len` characters, in
+    ///         attoUSD. The authoritative accessor for the curve: it applies the
+    ///         `topRung` gate that makes the stale tail of the underlying map
+    ///         unreadable. `len == 0` is quoted as the shortest name.
+    function priceUSDPerYear(uint256 len) public view returns (uint256) {
+        if (len == 0) len = 1;
+        return len > topRung ? basePriceUSDPerYear : _priceByLength[len];
+    }
+
     function price(
         string calldata name,
         uint256 expires,
@@ -125,10 +151,11 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     ) external view override returns (IPriceOracle.Price memory) {
         IPriceOracle.Price memory usd = _priceUSD(name, expires, duration);
         uint256 ethPrice = _ethPrice();
+        uint256 scale = usdOracleScale;
         return
             IPriceOracle.Price({
-                base: (usd.base * 1e8) / ethPrice,
-                premium: (usd.premium * 1e8) / ethPrice
+                base: (usd.base * scale) / ethPrice,
+                premium: (usd.premium * scale) / ethPrice
             });
     }
 
@@ -187,7 +214,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
                 len <= rung.maxLength;
                 ++len
             ) {
-                priceUSDPerYearByLength[len] = rung.priceUSDPerYear;
+                _priceByLength[len] = rung.priceUSDPerYear;
             }
             previousLength = rung.maxLength;
             previousPrice = rung.priceUSDPerYear;
@@ -209,12 +236,17 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         emit PricesChanged(newBasePriceUSDPerYear, rungs);
     }
 
-    function _setUsdOracle(AggregatorInterface newOracle) internal {
+    function _setUsdOracle(
+        AggregatorInterface newOracle,
+        uint8 decimals
+    ) internal {
         if (address(newOracle) == address(0)) revert ZeroAddress();
+        if (decimals == 0 || decimals > 36) revert InvalidFeedDecimals(decimals);
         int256 answer = newOracle.latestAnswer();
         if (answer <= 0) revert InvalidPriceFeed(answer);
         usdOracle = newOracle;
-        emit UsdOracleChanged(address(newOracle));
+        usdOracleScale = 10 ** uint256(decimals);
+        emit UsdOracleChanged(address(newOracle), decimals);
     }
 
     function _setPremium(
@@ -232,16 +264,12 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         uint256 expires,
         uint256 duration
     ) internal view returns (IPriceOracle.Price memory) {
-        uint256 len = name.strlen();
         // The empty label is unregistrable (`valid()` requires
         // `strlen >= minCharLength`, and `minCharLength` is never zero), but
         // `rentPrice("")` is a public view the app can reach and index 0 of the
-        // map is never written. Quote it as the shortest name rather than free.
-        if (len == 0) len = 1;
-
-        uint256 perYear = len > topRung
-            ? basePriceUSDPerYear
-            : priceUSDPerYearByLength[len];
+        // map is never written. `priceUSDPerYear` quotes it as the shortest name
+        // rather than free.
+        uint256 perYear = priceUSDPerYear(name.strlen());
 
         return
             IPriceOracle.Price({

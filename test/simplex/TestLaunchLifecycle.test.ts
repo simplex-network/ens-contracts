@@ -116,6 +116,7 @@ describe('launch lifecycle', () => {
       dummyOracle = await viem.deployContract('DummyOracle', [100000000n])
       priceOracle = await viem.deployContract('SimplexPriceOracle', [
         dummyOracle.address,
+        8,
         PRICE_BASE,
         PRICE_RUNGS,
         0n, // startPremium
@@ -892,7 +893,7 @@ describe('launch lifecycle', () => {
     it('the namespace can still survive its own price feed', async () => {
       const replacement = await connection.viem.deployContract(
         'SimplexPriceOracle',
-        [dummyOracle.address, PRICE_BASE, PRICE_RUNGS, 0n, 0n],
+        [dummyOracle.address, 8, PRICE_BASE, PRICE_RUNGS, 0n, 0n],
       )
       await controller.write.setPriceOracle([replacement.address], {
         account: admin,

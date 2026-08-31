@@ -43,6 +43,7 @@ async function fixture() {
   const feed = await connection.viem.deployContract('DummyOracle', [100000000n])
   const oracle = await connection.viem.deployContract('SimplexPriceOracle', [
     feed.address,
+    8,
     USD,
     GAPPED,
     0n,
@@ -117,6 +118,22 @@ describe('SimplexPriceOracle', () => {
           0n,
         )
       }
+    })
+
+    it('exposes the curve only through the gated view, never the stale tail', async () => {
+      const { oracle } = await load()
+      expect(await oracle.read.priceUSDPerYear([20n])).toBe(2n * USD)
+      await oracle.write.setPrices([USD, [rung(5n, 8n * USD)]], {
+        account: owner,
+      })
+      // length 20 still holds 2e18 underneath, but the accessor gates on topRung
+      // and agrees with what priceUSD actually charges
+      expect(await oracle.read.priceUSDPerYear([20n])).toBe(USD)
+      expect((await oracle.read.priceUSD([label(20), 0n, YEAR])).base).toBe(USD)
+      // and the empty label is quoted as the shortest name, not as free
+      expect(await oracle.read.priceUSDPerYear([0n])).toBe(
+        await oracle.read.priceUSDPerYear([1n]),
+      )
     })
 
     it('a shrunk curve does not read the entries left above the new top', async () => {
@@ -202,6 +219,56 @@ describe('SimplexPriceOracle', () => {
       )
     })
 
+    it('leaves the price non-increasing in length for any curve it accepts', async () => {
+      const { oracle } = await load()
+      // Curves chosen to exercise the tails: no rungs, a single rung, a gapped
+      // pair, one sitting on MAX_RUNG_LENGTH, a flat run, one whose base equals
+      // the lowest rung, and an all-zero (free) curve.
+      const curves: [bigint, ReturnType<typeof rung>[]][] = [
+        [USD, []],
+        [0n, [rung(1n, USD)]],
+        [USD, [rung(13n, 4n * USD), rung(32n, 2n * USD)]],
+        [USD, [rung(64n, 2n * USD)]],
+        [USD, [rung(2n, 5n * USD), rung(7n, 5n * USD), rung(9n, USD)]],
+        [8n * USD, [rung(3n, 128n * USD), rung(5n, 8n * USD)]],
+        [0n, [rung(1n, 0n), rung(60n, 0n)]],
+      ]
+      const at = async (len: number) =>
+        (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
+
+      for (const [base, rungs] of curves) {
+        await oracle.write.setPrices([base, rungs], { account: owner })
+        // Every rung edge and its neighbours, where an off-by-one would land,
+        // plus the ends. Sweeping all 70 lengths on every curve is hundreds of
+        // sequential eth_calls and makes the test flaky under parallel load.
+        const lengths = new Set<number>([1, 2, 70])
+        for (const { maxLength } of rungs) {
+          const m = Number(maxLength)
+          for (const l of [m - 1, m, m + 1])
+            if (l >= 1 && l <= 70) lengths.add(l)
+        }
+        let previous: bigint | undefined
+        for (const len of [...lengths].sort((a, b) => a - b)) {
+          const p = await at(len)
+          if (previous !== undefined) expect(p <= previous).toBe(true)
+          previous = p
+        }
+        // and the tail is the base price, never a leftover from an older curve
+        expect(await at(70)).toBe(base)
+      }
+    })
+
+    it('sweeps every length on a gapped curve, edge to edge', async () => {
+      const { oracle } = await load()
+      let previous: bigint | undefined
+      for (let len = 1; len <= 40; len++) {
+        const p = (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
+        expect(p).toBe(len <= 13 ? 4n * USD : len <= 32 ? 2n * USD : USD)
+        if (previous !== undefined) expect(p <= previous).toBe(true)
+        previous = p
+      }
+    })
+
     it('accepts a flat curve, since monotonicity is not strict', async () => {
       const { oracle } = await load()
       await oracle.write.setPrices([USD, [rung(3n, USD), rung(5n, USD)]], {
@@ -260,7 +327,7 @@ describe('SimplexPriceOracle', () => {
     it('refuses the zero address', async () => {
       const { oracle } = await load()
       await expect(
-        oracle.write.setUsdOracle([zeroAddress], { account: owner }),
+        oracle.write.setUsdOracle([zeroAddress, 8], { account: owner }),
       ).toBeRevertedWithCustomError('ZeroAddress')
     })
 
@@ -268,14 +335,46 @@ describe('SimplexPriceOracle', () => {
       const { oracle } = await load()
       const dead = await connection.viem.deployContract('DummyOracle', [0n])
       await expect(
-        oracle.write.setUsdOracle([dead.address], { account: owner }),
+        oracle.write.setUsdOracle([dead.address, 8], { account: owner }),
       ).toBeRevertedWithCustomError('InvalidPriceFeed')
       const negative = await connection.viem.deployContract('DummyOracle', [
         -100000000n,
       ])
       await expect(
-        oracle.write.setUsdOracle([negative.address], { account: owner }),
+        oracle.write.setUsdOracle([negative.address, 8], { account: owner }),
       ).toBeRevertedWithCustomError('InvalidPriceFeed')
+    })
+
+    it('rejects a decimals value outside the plausible range', async () => {
+      const { oracle, feed } = await load()
+      for (const bad of [0, 37, 255]) {
+        await expect(
+          oracle.write.setUsdOracle([feed.address, bad], { account: owner }),
+        ).toBeRevertedWithCustomError('InvalidFeedDecimals')
+      }
+    })
+
+    it('converts through the stated feed scale, not a hardcoded one', async () => {
+      const { oracle } = await load()
+      const weiAt8 = (await oracle.read.price([label(40), 0n, YEAR])).base
+
+      // The same real ETH price ($1) reported by an 18-decimal feed. Quoting it
+      // as 8 decimals would misprice by 1e10; stating the scale keeps it exact.
+      const wideFeed = await connection.viem.deployContract('DummyOracle', [
+        10n ** 18n,
+      ])
+      await oracle.write.setUsdOracle([wideFeed.address, 18], {
+        account: owner,
+      })
+      expect(await oracle.read.usdOracleScale()).toBe(10n ** 18n)
+      expect((await oracle.read.price([label(40), 0n, YEAR])).base).toBe(weiAt8)
+
+      // and stating it wrongly is exactly the mispricing the parameter exists
+      // to make explicit, so it is visible in the transaction rather than silent
+      await oracle.write.setUsdOracle([wideFeed.address, 8], { account: owner })
+      expect((await oracle.read.price([label(40), 0n, YEAR])).base).toBe(
+        weiAt8 / 10n ** 10n,
+      )
     })
 
     it('swaps the feed without moving the USD list price', async () => {
@@ -286,7 +385,9 @@ describe('SimplexPriceOracle', () => {
       const replacement = await connection.viem.deployContract('DummyOracle', [
         200000000n,
       ])
-      await oracle.write.setUsdOracle([replacement.address], { account: owner })
+      await oracle.write.setUsdOracle([replacement.address, 8], {
+        account: owner,
+      })
 
       expect((await oracle.read.usdOracle()).toLowerCase()).toBe(
         replacement.address.toLowerCase(),
@@ -327,7 +428,7 @@ describe('SimplexPriceOracle', () => {
       // Base zero on both, so `premium` is all that is being compared.
       const oracle = await connection.viem.deployContract(
         'SimplexPriceOracle',
-        [feed.address, 0n, [], START_PREMIUM, TOTAL_DAYS],
+        [feed.address, 8, 0n, [], START_PREMIUM, TOTAL_DAYS],
       )
       const vendored = await connection.viem.deployContract(
         'ExponentialPremiumPriceOracle',
@@ -437,7 +538,7 @@ describe('SimplexPriceOracle', () => {
         oracle.write.setPrices([USD, LAUNCH], { account: alice }),
       ).toBeRevertedWithString(OWNABLE)
       await expect(
-        oracle.write.setUsdOracle([feed.address], { account: alice }),
+        oracle.write.setUsdOracle([feed.address, 8], { account: alice }),
       ).toBeRevertedWithString(OWNABLE)
       await expect(
         oracle.write.setPremium([USD, 21n], { account: alice }),

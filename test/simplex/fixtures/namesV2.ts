@@ -70,6 +70,7 @@ export async function deployNamesV2(
   const dummyOracle = await viem.deployContract('DummyOracle', [100000000n])
   const priceOracle = await viem.deployContract('SimplexPriceOracle', [
     dummyOracle.address,
+    8, // feed decimals: DummyOracle mimics Chainlink's 8
     PRICE_BASE,
     PRICE_RUNGS,
     0n, // startPremium
