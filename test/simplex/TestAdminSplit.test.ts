@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 import { deployNamesV2, YEAR } from './fixtures/namesV2.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+
 const connection = await hre.network.connect()
 const [ownerClient, guardianClient, , aliceClient] =
   await connection.viem.getWalletClients()
@@ -30,12 +32,12 @@ describe('admin split', () => {
   describe('restrictive: owner and guardian both', () => {
     it('addReservedNames', async () => {
       const { controller } = await load()
-      await controller.write.addReservedNames([['byowner']], { account: owner })
-      await controller.write.addReservedNames([['byguard']], {
+      await controller.write.addReservedNames([['byowner'], TRADEMARK], { account: owner })
+      await controller.write.addReservedNames([['byguard'], TRADEMARK], {
         account: guardian,
       })
       await expect(
-        controller.write.addReservedNames([['bynobody']], { account: alice }),
+        controller.write.addReservedNames([['bynobody'], TRADEMARK], { account: alice }),
       ).toBeRevertedWithCustomError('NotOwnerOrBeneficiary')
     })
 
@@ -52,7 +54,7 @@ describe('admin split', () => {
   describe('permissive: owner only, guardian rejected', () => {
     it('removeReservedNames', async () => {
       const { controller } = await load()
-      await controller.write.addReservedNames([['releaseme']], {
+      await controller.write.addReservedNames([['releaseme'], TRADEMARK], {
         account: owner,
       })
       await expect(
@@ -67,7 +69,7 @@ describe('admin split', () => {
 
     it('registerReserved', async () => {
       const { controller } = await load()
-      await controller.write.addReservedNames([['handitover']], {
+      await controller.write.addReservedNames([['handitover'], TRADEMARK], {
         account: owner,
       })
       await expect(

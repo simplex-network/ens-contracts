@@ -71,11 +71,30 @@ contract SimplexController is
     ///      storage variable would shift every slot below it.
     string public tldSuffix;
 
+    /// @notice Why a name is reserved. Stored per name; the human-readable
+    ///         wording lives client-side, so adding a phrasing is not an upgrade.
+    /// @dev    APPEND ONLY once names are reserved on chain. These integers are
+    ///         contract storage: reordering or removing a member silently
+    ///         relabels every name already reserved under it, and nothing on
+    ///         chain can detect that. `None` must stay 0 — `delete` writes zero,
+    ///         and "not reserved" is the absence of a reason.
+    enum Reason {
+        None,
+        Unspecified,
+        Trademark,
+        PublicInterest,
+        Offensive,
+        Internal,
+        Premium
+    }
+
     mapping(bytes32 => uint256) public commitments;
 
     // --- Simplex additions ---
     uint8 public minCharLength;
-    mapping(bytes32 => bool) public reservedNames;
+    /// @dev Reason.None means not reserved, so this one mapping answers both
+    ///      "is it reserved" and "why" - the two cannot drift apart.
+    mapping(bytes32 => Reason) public reservedNames;
     IERC721 public smpxNft;
     bool public nftGateEnabled;
     // Was `priceOracleFrozen`. `freezePriceOracle` is gone: the Chainlink feed is
@@ -88,6 +107,7 @@ contract SimplexController is
     error CommitmentTooNew(bytes32 commitment, uint256 minimumCommitmentTimestamp, uint256 currentTimestamp);
     error CommitmentTooOld(bytes32 commitment, uint256 maximumCommitmentTimestamp, uint256 currentTimestamp);
     error NameNotAvailable(string name);
+    error ReasonRequired();
     error DurationTooShort(uint256 duration);
     error ResolverRequiredWhenDataSupplied();
     error ReverseRecordNotSupported();
@@ -139,7 +159,8 @@ contract SimplexController is
     );
 
     event MinCharLengthChanged(uint8 newMinCharLength);
-    event ReservedNameAdded(string name);
+    event ReservedNameAdded(string name, Reason reason);
+    event ReservedNameReasonChanged(string name, Reason reason);
     event ReservedNameRemoved(string name);
     event NftGateDisabled();
     event PriceOracleChanged(IPriceOracleUSD indexed newOracle);
@@ -315,15 +336,40 @@ contract SimplexController is
         emit MinCharLengthChanged(newMinCharLength);
     }
 
-    /// @notice Reserve any number of names in a single transaction. Pass a
-    ///         single-element array to reserve one. Each addition emits a
-    ///         `ReservedNameAdded` event so indexers see them individually.
+    /// @notice Reserve any number of names in a single transaction, all for the
+    ///         same reason. Pass a single-element array to reserve one. Each
+    ///         addition emits a `ReservedNameAdded` event so indexers see them
+    ///         individually.
+    /// @param  reason why these names are held back. `Reason.None` is rejected:
+    ///         it is the value that means "not reserved", so accepting it here
+    ///         would make this function silently unreserve.
     function addReservedNames(
-        string[] calldata names
+        string[] calldata names,
+        Reason reason
     ) external onlyOwnerOrBeneficiary {
+        if (reason == Reason.None) revert ReasonRequired();
         for (uint256 i = 0; i < names.length; ++i) {
-            reservedNames[keccak256(bytes(names[i]))] = true;
-            emit ReservedNameAdded(names[i]);
+            reservedNames[keccak256(bytes(names[i]))] = reason;
+            emit ReservedNameAdded(names[i], reason);
+        }
+    }
+
+    /// @notice Change why already-reserved names are held, without unreserving
+    ///         them. Unreserving and re-reserving would open the name to a
+    ///         squatter for the length of that gap.
+    /// @dev    Only names that are already reserved may be reclassified; this
+    ///         function is not a second way to reserve.
+    function setReservationReason(
+        string[] calldata names,
+        Reason reason
+    ) external onlyOwnerOrBeneficiary {
+        if (reason == Reason.None) revert ReasonRequired();
+        for (uint256 i = 0; i < names.length; ++i) {
+            bytes32 labelhash = keccak256(bytes(names[i]));
+            if (reservedNames[labelhash] == Reason.None)
+                revert NameNotReserved(names[i]);
+            reservedNames[labelhash] = reason;
+            emit ReservedNameReasonChanged(names[i], reason);
         }
     }
 
@@ -347,7 +393,8 @@ contract SimplexController is
         uint256 duration
     ) external onlyOwner {
         bytes32 labelhash = keccak256(bytes(label));
-        if (!reservedNames[labelhash]) revert NameNotReserved(label);
+        if (reservedNames[labelhash] == Reason.None)
+            revert NameNotReserved(label);
         if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
 
         bytes32 namehash = keccak256(abi.encodePacked(tldNode, labelhash));
@@ -401,7 +448,9 @@ contract SimplexController is
         string calldata label
     ) public view override returns (bool) {
         bytes32 labelhash = keccak256(bytes(label));
-        return _available(label, labelhash) && !reservedNames[labelhash];
+        return
+            _available(label, labelhash) &&
+            reservedNames[labelhash] == Reason.None;
     }
 
     function makeCommitment(
@@ -437,7 +486,7 @@ contract SimplexController is
     ) internal view {
         if (label.strlen() < minCharLength)
             revert NameTooShort(label, minCharLength);
-        if (reservedNames[keccak256(bytes(label))])
+        if (reservedNames[keccak256(bytes(label))] != Reason.None)
             revert NameReserved(label);
         if (checkNft && nftGateEnabled && smpxNft.balanceOf(msg.sender) == 0)
             revert NftRequired();
