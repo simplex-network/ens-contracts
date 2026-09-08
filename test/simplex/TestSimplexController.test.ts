@@ -1209,6 +1209,19 @@ describe('SimplexController', () => {
       expect((await baseRegistrar.read.nameExpires([id])) > before).toBe(true)
     })
 
+    it('renew refuses one day short of a year', async () => {
+      const { controller } = await loadFixture()
+      await commitAndRegister(controller, 'shortrenew', registrantAccount)
+      const short = 365n * DAY - DAY
+      const price = await controller.read.rentPrice(['shortrenew', short])
+      await expect(
+        controller.write.renew(['shortrenew', short, zeroHash], {
+          account: registrantAccount,
+          value: price.base,
+        }),
+      ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
     it('renew reverts InsufficientValue when underpaid', async () => {
       const { controller } = await loadFixture()
       await commitAndRegister(controller, 'renewpoor', registrantAccount)

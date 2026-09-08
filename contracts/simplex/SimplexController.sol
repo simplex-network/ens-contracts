@@ -42,8 +42,7 @@ contract SimplexController is
 
     /// @dev A year, not the 28 days ENS allows: a name is an identity people
     ///      hand out, so the shortest registration should still outlast the
-    ///      links that carry it. Registration only - `renew` sets no minimum,
-    ///      since extending a name someone already holds is not the same act.
+    ///      links that carry it. Renewals are held to the same minimum.
     uint256 public constant MIN_REGISTRATION_DURATION = 365 days;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
@@ -668,6 +667,10 @@ contract SimplexController is
         uint256 cost,
         bytes32 referrer
     ) private returns (uint256 expires) {
+        // Guarded here rather than in each caller, so renew and renewWithCredit
+        // cannot diverge on it.
+        if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
+
         expires = base.renew(uint256(labelhash), duration);
 
         emit NameRenewed(label, labelhash, cost, expires, referrer);

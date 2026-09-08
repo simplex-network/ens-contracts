@@ -97,7 +97,7 @@ describe('public sales switch', () => {
     await controller.write.renewWithCredit(['renewany', YEAR, zeroHash], {
       account: registrar,
     })
-    await controller.write.renew(['renewany', 28n * DAY, zeroHash], {
+    await controller.write.renew(['renewany', YEAR, zeroHash], {
       account: alice,
       value: YEAR_PRICE_USD,
     })
