@@ -40,7 +40,8 @@ contract SimplexController is
 {
     using StringUtils for *;
 
-    uint256 public constant MIN_REGISTRATION_DURATION = 365 days;
+    uint256 public constant MIN_REGISTRATION_DURATION = 730 days;
+    uint256 public constant MIN_RENEWAL_DURATION = 365 days;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
     // Implemented by hand rather than inheriting ReentrancyGuardUpgradeable so
@@ -700,7 +701,7 @@ contract SimplexController is
         uint256 cost,
         bytes32 referrer
     ) private returns (uint256 expires) {
-        if (duration < MIN_REGISTRATION_DURATION) revert DurationTooShort(duration);
+        if (duration < MIN_RENEWAL_DURATION) revert DurationTooShort(duration);
 
         expires = base.renew(uint256(labelhash), duration);
 
