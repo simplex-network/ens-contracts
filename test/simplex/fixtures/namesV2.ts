@@ -231,11 +231,7 @@ export async function signIntent(
 /** Enough allowance that a test never has to think about it: $1000. */
 export const AMPLE_ALLOWANCE = 1000n * 10n ** 18n
 
-/**
- * SimplexController.Reason, mirrored for tests, and named the same way by the
- * SMP protocol. Append-only on chain, so this list is a copy of a decision that
- * cannot be revised once names are reserved.
- */
+/** SimplexController.Reason. Append-only on chain: these numbers are storage. */
 export const Reason = {
   None: 0,
   Internal: 1,

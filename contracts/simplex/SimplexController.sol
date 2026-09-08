@@ -71,16 +71,11 @@ contract SimplexController is
     ///      storage variable would shift every slot below it.
     string public tldSuffix;
 
-    /// @notice Why a name is reserved. Stored per name; the human-readable
-    ///         wording lives client-side, so adding a phrasing is not an upgrade.
-    /// @dev    APPEND ONLY once names are reserved on chain. These integers are
-    ///         contract storage: reordering or removing a member silently
-    ///         relabels every name already reserved under it, and nothing on
-    ///         chain can detect that. `None` must stay 0 — `delete` writes zero,
-    ///         and "not reserved" is the absence of a reason.
-    /// @dev Mirrored by the SMP protocol as `internal` / `trademark` /
-    ///      `community`. 1 is also what the boolean `reservedNames` of the first
-    ///      .testing deployment set, which is why it reads as Internal.
+    /// @dev APPEND ONLY once names are reserved. The members are stored as their
+    ///      positions, so reordering or removing one silently relabels every name
+    ///      already reserved under it and nothing on chain can tell. `None` must
+    ///      stay 0, because `delete` writes zero. The wording a user reads is
+    ///      client-side.
     enum Reason {
         None,
         Internal,
@@ -336,13 +331,8 @@ contract SimplexController is
         emit MinCharLengthChanged(newMinCharLength);
     }
 
-    /// @notice Reserve any number of names in a single transaction, all for the
-    ///         same reason. Pass a single-element array to reserve one. Each
-    ///         addition emits a `ReservedNameAdded` event so indexers see them
-    ///         individually.
-    /// @param  reason why these names are held back. `Reason.None` is rejected:
-    ///         it is the value that means "not reserved", so accepting it here
-    ///         would make this function silently unreserve.
+    /// @param reason `Reason.None` is refused: it is the value that means "not
+    ///        reserved", so it would make this function silently unreserve.
     function addReservedNames(
         string[] calldata names,
         Reason reason
@@ -354,11 +344,8 @@ contract SimplexController is
         }
     }
 
-    /// @notice Change why already-reserved names are held, without unreserving
-    ///         them. Unreserving and re-reserving would open the name to a
-    ///         squatter for the length of that gap.
-    /// @dev    Only names that are already reserved may be reclassified; this
-    ///         function is not a second way to reserve.
+    /// @notice Reclassifies without unreserving: removing and re-adding would
+    ///         open the name to a squatter for the gap between the two.
     function setReservationReason(
         string[] calldata names,
         Reason reason

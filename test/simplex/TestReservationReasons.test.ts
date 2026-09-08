@@ -19,12 +19,9 @@ async function fixture() {
 const load = () => connection.networkHelpers.loadFixture(fixture)
 
 /**
- * A reservation carries why it exists. The reason lives in the same mapping as
- * the fact, so the two cannot disagree: `Reason.None` is both "no reason" and
- * "not reserved", which is what makes `delete` keep working unchanged.
- *
- * The wording a user reads is client-side, per ens-contracts#29 — nothing here
- * asserts on English.
+ * `Reason.None` is both "no reason" and "not reserved", which is what lets one
+ * mapping answer both and `delete` keep working. The wording a user reads is
+ * client-side, so nothing here asserts on English.
  */
 describe('reservation reasons', () => {
   it('stores the reason it was given', async () => {
