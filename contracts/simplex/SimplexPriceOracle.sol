@@ -8,23 +8,15 @@ import {StringUtils} from "../utils/StringUtils.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
-/// @notice USD-denominated rent, configurable by call rather than fixed at
-///         construction. `StablePriceOracle` hard-wires six `immutable` prices at
-///         lengths 1..6, so every price change means a fresh oracle plus
-///         `SimplexController.setPriceOracle`.
+/// @notice USD-denominated rent the owner can change by call. In
+///         `StablePriceOracle` the prices are `immutable`, so every change means
+///         a new oracle and a `SimplexController.setPriceOracle`.
 ///
-///         The curve is a base price per year plus exceptions at individual
-///         label lengths. A length with no exception costs the base price, so
-///         the list carries only what differs and nothing is inherited between
-///         lengths. Storage holds that list as it is written, and `prices()`
-///         reads it back in the same shape.
-///
-///         Lapsed names carry no premium: past its grace period a name is
-///         registrable at the ordinary price.
+///         Lapsed names carry no premium: once the grace period is over a name
+///         costs the same as any other.
 contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     using StringUtils for *;
 
-    /// @notice "Labels of exactly `labelLength` characters cost this."
     struct LabelPrice {
         uint256 labelLength;
         uint256 priceUSDPerYear;
@@ -32,30 +24,28 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
 
     uint256 public constant SECONDS_PER_YEAR = 365 days;
 
-    /// @dev Ceiling on where an exception may sit, bounding `setPrices`.
+    /// @dev Bounds how much `setPrices` can be made to write.
     uint256 public constant MAX_LABEL_LENGTH = 64;
 
     AggregatorInterface public usdOracle;
-    /// @dev `10 ** decimals` of the feed above. Chainlink's ETH/USD feeds are 8,
-    ///      but `AggregatorInterface` exposes no `decimals()`, so a replacement
-    ///      feed's scale cannot be read and has to be stated. Getting it wrong
-    ///      misprices every name by orders of magnitude without reverting.
+    /// @dev `AggregatorInterface` has no `decimals()`, so a feed's scale cannot
+    ///      be read and has to be stated. A wrong one misprices every name
+    ///      without reverting.
     uint256 public usdOracleScale;
 
-    /// @dev attoUSD per year for every length without an exception.
+    /// @dev attoUSD per year, for every length without an exception.
     uint256 public basePriceUSDPerYear;
-    /// @dev Zero means no exception, which is why a zero price is refused.
+    /// @dev Zero means no exception, so a zero price is refused.
     mapping(uint256 => uint256) public priceByLabelLength;
-    /// @dev The keys of the mapping above, so the curve can be read back and
-    ///      replaced whole.
+    /// @dev The mapping's keys: a mapping cannot be read back or cleared
+    ///      without them.
     uint256[] public pricedLabelLengths;
 
     event PricesChanged(uint256 basePriceUSDPerYear, LabelPrice[] prices);
     event UsdOracleChanged(address indexed usdOracle, uint8 decimals);
 
-    /// @dev The feed reported zero or a negative price. Zero would panic on the
-    ///      division below; negative would wrap the cast to ~2**256 and floor
-    ///      every quote to zero, handing out free names. Both fail loudly instead.
+    /// @dev Zero would divide by zero; negative would wrap the cast and quote
+    ///      every name as free.
     error InvalidPriceFeed(int256 answer);
     error ZeroAddress();
     error InvalidFeedDecimals(uint8 decimals);
@@ -73,11 +63,8 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         _setPrices(_basePriceUSDPerYear, _prices);
     }
 
-    /// @notice Replace the whole curve in one call: the base price, and the
-    ///         exceptions that differ from it.
-    /// @param newBasePriceUSDPerYear attoUSD per year for lengths not listed.
-    /// @param newPrices Distinct lengths in 1..`MAX_LABEL_LENGTH`, each with a
-    ///        non-zero price. Order does not matter. May be empty.
+    /// @notice Replaces the whole curve: exceptions not listed again are gone.
+    ///         Order does not matter and the list may be empty.
     function setPrices(
         uint256 newBasePriceUSDPerYear,
         LabelPrice[] calldata newPrices
@@ -85,10 +72,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         _setPrices(newBasePriceUSDPerYear, newPrices);
     }
 
-    /// @notice Point the oracle at a different ETH/USD feed.
-    /// @param decimals The new feed's scale. Must be stated: the interface has no
-    ///        `decimals()` to read it from, and a wrong value silently misprices
-    ///        every name rather than reverting.
+    /// @param decimals The new feed's scale, which cannot be read from it.
     function setUsdOracle(
         AggregatorInterface newOracle,
         uint8 decimals
@@ -96,8 +80,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         _setUsdOracle(newOracle, decimals);
     }
 
-    /// @notice The yearly price for a label of `labelLength` characters, in
-    ///         attoUSD.
+    /// @notice attoUSD per year for a label of this length.
     function priceUSDPerYear(
         uint256 labelLength
     ) public view returns (uint256) {

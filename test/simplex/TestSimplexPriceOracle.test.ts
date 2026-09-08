@@ -60,7 +60,6 @@ describe('SimplexPriceOracle', () => {
 
       expect(await at(13)).toBe(4n * USD)
       expect(await at(32)).toBe(2n * USD)
-      // nothing is inherited between listed lengths
       expect(await at(12)).toBe(USD)
       expect(await at(14)).toBe(USD)
       expect(await at(1)).toBe(USD)
@@ -78,8 +77,8 @@ describe('SimplexPriceOracle', () => {
       expect(await at(5)).toBe(8n * USD)
       expect(await at(6)).toBe(USD)
       expect(await at(30)).toBe(USD)
-      // shorter than the shortest listed length is the base, not the cheapest
-      // listed price: the controller's minCharLength is what keeps it unsold
+      // the base, not the cheapest listed price: what keeps a one-character
+      // name unsold is the controller's minCharLength, not the oracle
       expect(await at(1)).toBe(USD)
     })
 
@@ -180,7 +179,7 @@ describe('SimplexPriceOracle', () => {
       expect(await oracle.read.priceUSDPerYear([5n])).toBe(8n * USD)
     })
 
-    // the curve is whatever the owner says: pricing policy is not the oracle's
+    // the oracle stores the curve, it does not have opinions about it
     it('accepts a longer label costing more than a shorter one', async () => {
       const { oracle } = await load()
       await oracle.write.setPrices(

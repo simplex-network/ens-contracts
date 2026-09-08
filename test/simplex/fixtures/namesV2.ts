@@ -11,12 +11,7 @@ const perYear = (usd: bigint) => usd * 10n ** 18n
 /** What a length with no exception costs: $10 a year. */
 export const PRICE_BASE = perYear(10n)
 
-/**
- * The exceptions for the test curve, in the shape `SimplexPriceOracle` takes
- * them. $10 a year at six characters and above (the base price), ten times more
- * for each character lost. Exact multiples of the base, so the ratios hold to
- * the attoUSD.
- */
+/** Ten times the base for each character below six, in exact multiples. */
 export const PRICE_EXCEPTIONS = [
   { labelLength: 1n, priceUSDPerYear: PRICE_BASE * 100000n },
   { labelLength: 2n, priceUSDPerYear: PRICE_BASE * 10000n },
