@@ -40,7 +40,11 @@ contract SimplexController is
 {
     using StringUtils for *;
 
-    uint256 public constant MIN_REGISTRATION_DURATION = 28 days;
+    /// @dev A year, not the 28 days ENS allows: a name is an identity people
+    ///      hand out, so the shortest registration should still outlast the
+    ///      links that carry it. Registration only - `renew` sets no minimum,
+    ///      since extending a name someone already holds is not the same act.
+    uint256 public constant MIN_REGISTRATION_DURATION = 365 days;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
     // Implemented by hand rather than inheriting ReentrancyGuardUpgradeable so

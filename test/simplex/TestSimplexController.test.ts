@@ -58,7 +58,7 @@ async function deploySimplexControllerProxy(args: {
   return { controller, implementation, proxyAddress: proxy.address }
 }
 
-const REGISTRATION_TIME = 28n * DAY
+const REGISTRATION_TIME = 365n * DAY
 const GRACE_PERIOD = 90n * DAY
 
 const connection = await hre.network.connect()
@@ -1374,6 +1374,21 @@ describe('SimplexController', () => {
       await expect(
         controller.read.makeCommitment([mkReg({ duration: 1n })]),
       ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
+    // the boundary itself, so the minimum cannot quietly drift back
+    it('makeCommitment refuses one day short of a year', async () => {
+      const { controller } = await loadFixture()
+      await expect(
+        controller.read.makeCommitment([mkReg({ duration: 365n * DAY - DAY })]),
+      ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
+    it('makeCommitment accepts exactly a year', async () => {
+      const { controller } = await loadFixture()
+      await expect(
+        controller.read.makeCommitment([mkReg({ duration: 365n * DAY })]),
+      ).resolves.toBeDefined()
     })
 
     it('register reverts NameNotAvailable for an already-registered name', async () => {
