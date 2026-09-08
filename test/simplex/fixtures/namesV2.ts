@@ -8,28 +8,29 @@ export const YEAR = 365n * DAY
 /** attoUSD per year for a given yearly price in whole dollars. */
 const perYear = (usd: bigint) => usd * 10n ** 18n
 
-/** What every length above the tallest rung costs: $10 a year. */
+/** What a length with no exception costs: $10 a year. */
 export const PRICE_BASE = perYear(10n)
 
 /**
- * The rung list for the test curve, in the shape `SimplexPriceOracle` takes it:
- * a rung `(maxLength, priceUSDPerYear)` covers every length up to `maxLength`.
- * $10 a year at six characters and above (the base price), ten times more for
- * each character lost. Exact multiples of the base, so the ratios hold to the
- * attoUSD.
+ * The exceptions for the test curve, in the shape `SimplexPriceOracle` takes
+ * them. $10 a year at six characters and above (the base price), ten times more
+ * for each character lost. Exact multiples of the base, so the ratios hold to
+ * the attoUSD.
  */
-export const PRICE_RUNGS = [
-  { maxLength: 1n, priceUSDPerYear: PRICE_BASE * 100000n },
-  { maxLength: 2n, priceUSDPerYear: PRICE_BASE * 10000n },
-  { maxLength: 3n, priceUSDPerYear: PRICE_BASE * 1000n },
-  { maxLength: 4n, priceUSDPerYear: PRICE_BASE * 100n },
-  { maxLength: 5n, priceUSDPerYear: PRICE_BASE * 10n },
+export const PRICE_EXCEPTIONS = [
+  { labelLength: 1n, priceUSDPerYear: PRICE_BASE * 100000n },
+  { labelLength: 2n, priceUSDPerYear: PRICE_BASE * 10000n },
+  { labelLength: 3n, priceUSDPerYear: PRICE_BASE * 1000n },
+  { labelLength: 4n, priceUSDPerYear: PRICE_BASE * 100n },
+  { labelLength: 5n, priceUSDPerYear: PRICE_BASE * 10n },
 ] as const
 
 /** The yearly price of a label of `len` characters, in attoUSD. */
 export function yearPriceUSD(len: number, years = 1n) {
-  const rung = PRICE_RUNGS.find(({ maxLength }) => BigInt(len) <= maxLength)
-  return (rung ? rung.priceUSDPerYear : PRICE_BASE) * years
+  const exception = PRICE_EXCEPTIONS.find(
+    ({ labelLength }) => BigInt(len) === labelLength,
+  )
+  return (exception ? exception.priceUSDPerYear : PRICE_BASE) * years
 }
 
 /** What a one-year 6+ character name costs, in attoUSD. */
@@ -72,9 +73,7 @@ export async function deployNamesV2(
     dummyOracle.address,
     8, // feed decimals: DummyOracle mimics Chainlink's 8
     PRICE_BASE,
-    PRICE_RUNGS,
-    0n, // startPremium
-    0n, // totalDays
+    PRICE_EXCEPTIONS,
   ])
 
   const implementation = await viem.deployContract('SimplexController', [])

@@ -70,10 +70,10 @@ describe('registrar allowance', () => {
     )
   })
 
-  it('deducts the right price at every rung of the curve', async () => {
+  it('deducts the right price at every priced length', async () => {
     const { controller } = await load()
     await controller.write.setMinCharLength([3], { account: owner })
-    // a three-character name alone costs a thousand times the 6+ rung
+    // a three-character name alone costs a thousand times the base price
     await controller.write.setRegistrarAllowance(
       [registrar.address, yearPriceUSD(3) * 2n],
       { account: guardian },

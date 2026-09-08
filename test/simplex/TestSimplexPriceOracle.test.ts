@@ -21,20 +21,20 @@ const registrar = registrarClient.account
 const alice = aliceClient.account
 
 const USD = 10n ** 18n
-const GRACE_PERIOD = 90n * DAY
-/** ENS's mainnet auction: $100,000,000 decaying to nothing over 21 days. */
-const START_PREMIUM = 100000000n * USD
-const TOTAL_DAYS = 21n
 
-const rung = (maxLength: bigint, priceUSDPerYear: bigint) => ({
-  maxLength,
+const priced = (labelLength: bigint, priceUSDPerYear: bigint) => ({
+  labelLength,
   priceUSDPerYear,
 })
 
-/** Base $1/yr with rungs at 13 and 32, the gapped curve from the plan. */
-const GAPPED = [rung(13n, 4n * USD), rung(32n, 2n * USD)]
+/** Base $1/yr with exceptions at 13 and 32, so the gaps show. */
+const GAPPED = [priced(13n, 4n * USD), priced(32n, 2n * USD)]
 /** The `.simplex` launch curve: $1 at 6+, $8 at 5, $32 at 4, $128 at 3. */
-const LAUNCH = [rung(3n, 128n * USD), rung(4n, 32n * USD), rung(5n, 8n * USD)]
+const LAUNCH = [
+  priced(3n, 128n * USD),
+  priced(4n, 32n * USD),
+  priced(5n, 8n * USD),
+]
 
 const label = (len: number) => 'a'.repeat(len)
 
@@ -46,38 +46,25 @@ async function fixture() {
     8,
     USD,
     GAPPED,
-    0n,
-    0n,
   ])
   return { feed, oracle }
 }
 const load = () => connection.networkHelpers.loadFixture(fixture)
 
-/** The premium alone, evaluated `elapsed` seconds into the auction. */
-async function premiumAt(oracle: any, elapsed: bigint) {
-  const { timestamp } = await publicClient.getBlock()
-  const expires = timestamp - GRACE_PERIOD - elapsed
-  return (await oracle.read.priceUSD(['name', expires, YEAR])).premium
-}
-
 describe('SimplexPriceOracle', () => {
-  describe('band lookup and gaps', () => {
-    it('inherits the rung above through a gap, and falls to base past the top', async () => {
+  describe('lookup and gaps', () => {
+    it('prices a listed length, and every other length at the base', async () => {
       const { oracle } = await load()
       const at = async (len: number) =>
         (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
 
-      // rung 13 covers everything up to 13, with no entry for 1..12
-      expect(await at(1)).toBe(4n * USD)
-      expect(await at(12)).toBe(4n * USD)
       expect(await at(13)).toBe(4n * USD)
-      // rung 32 covers 14..32
-      expect(await at(14)).toBe(2n * USD)
-      expect(await at(31)).toBe(2n * USD)
       expect(await at(32)).toBe(2n * USD)
-      // above the tallest rung, the base price
-      expect(await at(33)).toBe(1n * USD)
-      expect(await at(100)).toBe(1n * USD)
+      // nothing is inherited between listed lengths
+      expect(await at(12)).toBe(USD)
+      expect(await at(14)).toBe(USD)
+      expect(await at(1)).toBe(USD)
+      expect(await at(100)).toBe(USD)
     })
 
     it('reproduces the launch curve exactly', async () => {
@@ -89,15 +76,11 @@ describe('SimplexPriceOracle', () => {
       expect(await at(3)).toBe(128n * USD)
       expect(await at(4)).toBe(32n * USD)
       expect(await at(5)).toBe(8n * USD)
-      expect(await at(6)).toBe(1n * USD)
-      expect(await at(30)).toBe(1n * USD)
-      // shorter than the shortest rung, so it inherits it rather than the base
-      expect(await at(1)).toBe(128n * USD)
-    })
-
-    it('quotes the empty label as the shortest name, not as free', async () => {
-      const { oracle } = await load()
-      expect((await oracle.read.priceUSD(['', 0n, YEAR])).base).toBe(4n * USD)
+      expect(await at(6)).toBe(USD)
+      expect(await at(30)).toBe(USD)
+      // shorter than the shortest listed length is the base, not the cheapest
+      // listed price: the controller's minCharLength is what keeps it unsold
+      expect(await at(1)).toBe(USD)
     })
 
     it('counts codepoints, not bytes', async () => {
@@ -112,7 +95,6 @@ describe('SimplexPriceOracle', () => {
     it('a free TLD is an empty curve with a zero base', async () => {
       const { oracle } = await load()
       await oracle.write.setPrices([0n, []], { account: owner })
-      expect(await oracle.read.topRung()).toBe(0n)
       for (const len of [1, 5, 20, 64]) {
         expect((await oracle.read.priceUSD([label(len), 0n, YEAR])).base).toBe(
           0n,
@@ -120,36 +102,28 @@ describe('SimplexPriceOracle', () => {
       }
     })
 
-    it('exposes the curve only through the gated view, never the stale tail', async () => {
+    it('reads the curve back in the shape it was set', async () => {
       const { oracle } = await load()
-      expect(await oracle.read.priceUSDPerYear([20n])).toBe(2n * USD)
-      await oracle.write.setPrices([USD, [rung(5n, 8n * USD)]], {
-        account: owner,
-      })
-      // length 20 still holds 2e18 underneath, but the accessor gates on topRung
-      // and agrees with what priceUSD actually charges
-      expect(await oracle.read.priceUSDPerYear([20n])).toBe(USD)
-      expect((await oracle.read.priceUSD([label(20), 0n, YEAR])).base).toBe(USD)
-      // and the empty label is quoted as the shortest name, not as free
-      expect(await oracle.read.priceUSDPerYear([0n])).toBe(
-        await oracle.read.priceUSDPerYear([1n]),
-      )
+      await oracle.write.setPrices([USD, LAUNCH], { account: owner })
+      const [base, exceptions] = await oracle.read.prices()
+      expect(base).toBe(USD)
+      expect(
+        [...exceptions]
+          .map((e: any) => [e.labelLength, e.priceUSDPerYear])
+          .sort((a, b) => Number(a[0] - b[0])),
+      ).toEqual(LAUNCH.map((e) => [e.labelLength, e.priceUSDPerYear]))
     })
 
-    it('a shrunk curve does not read the entries left above the new top', async () => {
+    it('replacing the curve drops the lengths the old one listed', async () => {
       const { oracle } = await load()
-      expect(await oracle.read.topRung()).toBe(32n)
-      expect((await oracle.read.priceUSD([label(20), 0n, YEAR])).base).toBe(
-        2n * USD,
-      )
-      // 20 still holds 2e18 in the map, but topRung now gates it out
-      await oracle.write.setPrices([USD, [rung(5n, 8n * USD)]], {
+      expect(await oracle.read.priceUSDPerYear([32n])).toBe(2n * USD)
+      await oracle.write.setPrices([USD, [priced(5n, 8n * USD)]], {
         account: owner,
       })
-      expect(await oracle.read.topRung()).toBe(5n)
-      expect((await oracle.read.priceUSD([label(20), 0n, YEAR])).base).toBe(
-        1n * USD,
-      )
+      expect(await oracle.read.priceUSDPerYear([32n])).toBe(USD)
+      expect((await oracle.read.priceUSD([label(32), 0n, YEAR])).base).toBe(USD)
+      const [, exceptions] = await oracle.read.prices()
+      expect(exceptions.length).toBe(1)
     })
   })
 
@@ -157,125 +131,73 @@ describe('SimplexPriceOracle', () => {
     const rejects = async (
       oracle: any,
       base: bigint,
-      rungs: ReturnType<typeof rung>[],
+      prices: ReturnType<typeof priced>[],
       error: string,
     ) =>
       expect(
-        oracle.write.setPrices([base, rungs], { account: owner }),
+        oracle.write.setPrices([base, prices], { account: owner }),
       ).toBeRevertedWithCustomError(error)
 
-    it('rejects a rung at length zero', async () => {
+    it('rejects a length of zero', async () => {
       const { oracle } = await load()
-      await rejects(oracle, USD, [rung(0n, 4n * USD)], 'RungLengthOutOfRange')
+      await rejects(oracle, USD, [priced(0n, 4n * USD)], 'LabelLengthOutOfRange')
     })
 
-    it('rejects a rung above MAX_RUNG_LENGTH', async () => {
+    it('rejects a length above MAX_LABEL_LENGTH', async () => {
       const { oracle } = await load()
-      expect(await oracle.read.MAX_RUNG_LENGTH()).toBe(64n)
-      await rejects(oracle, USD, [rung(65n, 4n * USD)], 'RungLengthOutOfRange')
+      expect(await oracle.read.MAX_LABEL_LENGTH()).toBe(64n)
+      await rejects(
+        oracle,
+        USD,
+        [priced(65n, 4n * USD)],
+        'LabelLengthOutOfRange',
+      )
     })
 
-    it('rejects lengths that do not strictly ascend', async () => {
+    it('rejects the same length twice', async () => {
       const { oracle } = await load()
       await rejects(
         oracle,
         USD,
-        [rung(5n, 8n * USD), rung(3n, 4n * USD)],
-        'RungLengthsNotAscending',
-      )
-      // a duplicate is not ascending either
-      await rejects(
-        oracle,
-        USD,
-        [rung(5n, 8n * USD), rung(5n, 4n * USD)],
-        'RungLengthsNotAscending',
+        [priced(5n, 8n * USD), priced(5n, 4n * USD)],
+        'DuplicateLabelLength',
       )
     })
 
-    it('rejects a price that rises as the length grows', async () => {
+    // zero is how a gap is recognised, so it cannot also be a price
+    it('rejects a zero-priced exception', async () => {
       const { oracle } = await load()
-      await rejects(
-        oracle,
-        USD,
-        [rung(3n, 8n * USD), rung(4n, 32n * USD)],
-        'RungPricesNotDescending',
-      )
+      await rejects(oracle, USD, [priced(5n, 0n)], 'ZeroExceptionPrice')
     })
 
-    it('rejects a base above the lowest rung', async () => {
+    it('takes the exceptions in any order', async () => {
       const { oracle } = await load()
-      await rejects(
-        oracle,
-        9n * USD,
-        [rung(5n, 8n * USD)],
-        'BasePriceExceedsLowestRung',
+      await oracle.write.setPrices(
+        [USD, [priced(5n, 8n * USD), priced(3n, 128n * USD)]],
+        { account: owner },
       )
-      // equal is allowed: it just flattens the curve
-      await oracle.write.setPrices([8n * USD, [rung(5n, 8n * USD)]], {
+      expect(await oracle.read.priceUSDPerYear([3n])).toBe(128n * USD)
+      expect(await oracle.read.priceUSDPerYear([5n])).toBe(8n * USD)
+    })
+
+    // the curve is whatever the owner says: pricing policy is not the oracle's
+    it('accepts a longer label costing more than a shorter one', async () => {
+      const { oracle } = await load()
+      await oracle.write.setPrices(
+        [USD, [priced(3n, 2n * USD), priced(9n, 40n * USD)]],
+        { account: owner },
+      )
+      expect(await oracle.read.priceUSDPerYear([3n])).toBe(2n * USD)
+      expect(await oracle.read.priceUSDPerYear([9n])).toBe(40n * USD)
+    })
+
+    it('accepts a base above every exception', async () => {
+      const { oracle } = await load()
+      await oracle.write.setPrices([9n * USD, [priced(5n, 8n * USD)]], {
         account: owner,
       })
-      expect((await oracle.read.priceUSD([label(9), 0n, YEAR])).base).toBe(
-        8n * USD,
-      )
-    })
-
-    it('leaves the price non-increasing in length for any curve it accepts', async () => {
-      const { oracle } = await load()
-      // Curves chosen to exercise the tails: no rungs, a single rung, a gapped
-      // pair, one sitting on MAX_RUNG_LENGTH, a flat run, one whose base equals
-      // the lowest rung, and an all-zero (free) curve.
-      const curves: [bigint, ReturnType<typeof rung>[]][] = [
-        [USD, []],
-        [0n, [rung(1n, USD)]],
-        [USD, [rung(13n, 4n * USD), rung(32n, 2n * USD)]],
-        [USD, [rung(64n, 2n * USD)]],
-        [USD, [rung(2n, 5n * USD), rung(7n, 5n * USD), rung(9n, USD)]],
-        [8n * USD, [rung(3n, 128n * USD), rung(5n, 8n * USD)]],
-        [0n, [rung(1n, 0n), rung(60n, 0n)]],
-      ]
-      const at = async (len: number) =>
-        (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
-
-      for (const [base, rungs] of curves) {
-        await oracle.write.setPrices([base, rungs], { account: owner })
-        // Every rung edge and its neighbours, where an off-by-one would land,
-        // plus the ends. Sweeping all 70 lengths on every curve is hundreds of
-        // sequential eth_calls and makes the test flaky under parallel load.
-        const lengths = new Set<number>([1, 2, 70])
-        for (const { maxLength } of rungs) {
-          const m = Number(maxLength)
-          for (const l of [m - 1, m, m + 1])
-            if (l >= 1 && l <= 70) lengths.add(l)
-        }
-        let previous: bigint | undefined
-        for (const len of [...lengths].sort((a, b) => a - b)) {
-          const p = await at(len)
-          if (previous !== undefined) expect(p <= previous).toBe(true)
-          previous = p
-        }
-        // and the tail is the base price, never a leftover from an older curve
-        expect(await at(70)).toBe(base)
-      }
-    })
-
-    it('sweeps every length on a gapped curve, edge to edge', async () => {
-      const { oracle } = await load()
-      let previous: bigint | undefined
-      for (let len = 1; len <= 40; len++) {
-        const p = (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
-        expect(p).toBe(len <= 13 ? 4n * USD : len <= 32 ? 2n * USD : USD)
-        if (previous !== undefined) expect(p <= previous).toBe(true)
-        previous = p
-      }
-    })
-
-    it('accepts a flat curve, since monotonicity is not strict', async () => {
-      const { oracle } = await load()
-      await oracle.write.setPrices([USD, [rung(3n, USD), rung(5n, USD)]], {
-        account: owner,
-      })
-      expect((await oracle.read.priceUSD([label(3), 0n, YEAR])).base).toBe(USD)
-      expect((await oracle.read.priceUSD([label(9), 0n, YEAR])).base).toBe(USD)
+      expect(await oracle.read.priceUSDPerYear([5n])).toBe(8n * USD)
+      expect(await oracle.read.priceUSDPerYear([9n])).toBe(9n * USD)
     })
   })
 
@@ -420,112 +342,19 @@ describe('SimplexPriceOracle', () => {
     })
   })
 
-  describe('the premium', () => {
-    async function premiumFixture() {
-      const feed = await connection.viem.deployContract('DummyOracle', [
-        100000000n,
-      ])
-      // Base zero on both, so `premium` is all that is being compared.
-      const oracle = await connection.viem.deployContract(
-        'SimplexPriceOracle',
-        [feed.address, 8, 0n, [], START_PREMIUM, TOTAL_DAYS],
-      )
-      const vendored = await connection.viem.deployContract(
-        'ExponentialPremiumPriceOracle',
-        [feed.address, [0n, 0n, 0n, 0n, 0n], START_PREMIUM, TOTAL_DAYS],
-      )
-      return { feed, oracle, vendored }
-    }
-    const loadPremium = () =>
-      connection.networkHelpers.loadFixture(premiumFixture)
-
-    it('matches the vendored oracle across the whole decay', async () => {
-      const { oracle, vendored } = await loadPremium()
-      const offsets = [
-        0n,
-        3600n,
-        DAY,
-        DAY + DAY / 2n,
-        10n * DAY,
-        21n * DAY - 864n, // 20.99 days
-        21n * DAY,
-        30n * DAY,
-      ]
-      for (const elapsed of offsets) {
-        expect(await premiumAt(oracle, elapsed)).toBe(
-          await premiumAt(vendored, elapsed),
-        )
-      }
-    })
-
-    it('starts at the full premium and reaches zero at totalDays', async () => {
-      const { oracle } = await loadPremium()
-      const endValue = await oracle.read.endValue()
-      expect(await premiumAt(oracle, 0n)).toBe(START_PREMIUM - endValue)
-      expect(await premiumAt(oracle, DAY)).toBe(START_PREMIUM / 2n - endValue)
-      expect(await premiumAt(oracle, 21n * DAY)).toBe(0n)
-      expect(await premiumAt(oracle, 30n * DAY)).toBe(0n)
-    })
-
-    it('charges nothing while the name is still in its grace period', async () => {
-      const { oracle } = await loadPremium()
+  describe('lapsed names', () => {
+    it('carry no premium, however long ago they expired', async () => {
+      const { oracle } = await load()
       const { timestamp } = await publicClient.getBlock()
-      // expired an hour ago, so 90 days of grace remain
-      const expires = timestamp - 3600n
-      expect(
-        (await oracle.read.priceUSD(['name', expires, YEAR])).premium,
-      ).toBe(0n)
-      // and nothing at all for a name that has not expired
-      expect(
-        (await oracle.read.priceUSD(['name', timestamp + YEAR, YEAR])).premium,
-      ).toBe(0n)
-    })
-
-    it('is retuned by call', async () => {
-      const { oracle } = await loadPremium()
-      await oracle.write.setPremium([1000n * USD, 7n], { account: owner })
-      expect(await oracle.read.startPremium()).toBe(1000n * USD)
-      expect(await oracle.read.totalDays()).toBe(7n)
-      expect(await oracle.read.endValue()).toBe((1000n * USD) >> 7n)
-      expect(await premiumAt(oracle, 0n)).toBe(
-        1000n * USD - ((1000n * USD) >> 7n),
-      )
-      expect(await premiumAt(oracle, 7n * DAY)).toBe(0n)
-    })
-
-    it('runs the documented $1,024-over-10-days example', async () => {
-      const { oracle } = await loadPremium()
-      await oracle.write.setPremium([1024n * USD, 10n], { account: owner })
-      expect(await oracle.read.endValue()).toBe(USD)
-      const table: [bigint, bigint][] = [
-        [0n, 1023n],
-        [DAY, 511n],
-        [2n * DAY, 255n],
-        [5n * DAY, 31n],
-        [9n * DAY, 1n],
-        [10n * DAY, 0n],
-        [11n * DAY, 0n],
-      ]
-      for (const [elapsed, dollars] of table) {
-        expect(await premiumAt(oracle, elapsed)).toBe(dollars * USD)
+      for (const ago of [0n, DAY, 30n * DAY, 400n * DAY]) {
+        const quote = await oracle.read.priceUSD([
+          label(20),
+          timestamp - 90n * DAY - ago,
+          YEAR,
+        ])
+        expect(quote.premium).toBe(0n)
+        expect(quote.base).toBe(USD)
       }
-    })
-
-    it('is switched off by a zero decay window', async () => {
-      const { oracle } = await loadPremium()
-      await oracle.write.setPremium([START_PREMIUM, 0n], { account: owner })
-      for (const elapsed of [0n, DAY, 21n * DAY]) {
-        expect(await premiumAt(oracle, elapsed)).toBe(0n)
-      }
-    })
-
-    it('is a flat fee: it does not scale with duration', async () => {
-      const { oracle } = await loadPremium()
-      const { timestamp } = await publicClient.getBlock()
-      const expires = timestamp - GRACE_PERIOD - DAY
-      const one = await oracle.read.priceUSD(['name', expires, YEAR])
-      const three = await oracle.read.priceUSD(['name', expires, 3n * YEAR])
-      expect(three.premium).toBe(one.premium)
     })
   })
 
@@ -539,9 +368,6 @@ describe('SimplexPriceOracle', () => {
       ).toBeRevertedWithString(OWNABLE)
       await expect(
         oracle.write.setUsdOracle([feed.address, 8], { account: alice }),
-      ).toBeRevertedWithString(OWNABLE)
-      await expect(
-        oracle.write.setPremium([USD, 21n], { account: alice }),
       ).toBeRevertedWithString(OWNABLE)
     })
 
@@ -643,7 +469,7 @@ describe('SimplexPriceOracle', () => {
     it('the sponsored path spends the new price in attoUSD', async () => {
       const { controller, priceOracle } = await loadStack()
       await priceOracle.write.setPrices([2n * USD, LAUNCH], { account: owner })
-      // drop to five characters so the $8 rung is reachable at all
+      // drop to five characters, the only length priced at $8
       await controller.write.setMinCharLength([5], { account: owner })
       const reg = registration('spons', alice.address)
       await controller.write.commit(
@@ -654,7 +480,7 @@ describe('SimplexPriceOracle', () => {
       expect(
         await controller.read.registrarAllowance([registrar.address]),
       ).toBe(
-        AMPLE_ALLOWANCE - 8n * USD, // five characters, so the $8 rung
+        AMPLE_ALLOWANCE - 8n * USD, // five characters, so $8
       )
     })
   })
