@@ -1389,7 +1389,6 @@ describe('SimplexController', () => {
       ).toBeRevertedWithCustomError('DurationTooShort')
     })
 
-    // the boundary itself, so the minimum cannot quietly drift back
     it('makeCommitment refuses one day short of a year', async () => {
       const { controller } = await loadFixture()
       await expect(
