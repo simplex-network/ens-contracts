@@ -5,6 +5,9 @@ import { DAY } from '../../fixtures/constants.js'
 
 export const YEAR = 365n * DAY
 
+/** The shortest a name can be registered for; renewal still takes a year. */
+export const MIN_REGISTRATION = 2n * YEAR
+
 /** US cents per year for a given yearly price in whole dollars. */
 const perYear = (usd: bigint) => usd * 100n
 
@@ -150,7 +153,7 @@ export function registration(
   return {
     label,
     owner,
-    duration: overrides.duration ?? YEAR,
+    duration: overrides.duration ?? MIN_REGISTRATION,
     secret: zeroHash,
     resolver: overrides.resolver ?? zeroAddress,
     data: overrides.data ?? [],

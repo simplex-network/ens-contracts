@@ -61,7 +61,7 @@ async function deploySimplexControllerProxy(args: {
   return { controller, implementation, proxyAddress: proxy.address }
 }
 
-const REGISTRATION_TIME = 365n * DAY
+const REGISTRATION_TIME = 730n * DAY
 const GRACE_PERIOD = 90n * DAY
 
 const connection = await hre.network.connect()
@@ -1225,6 +1225,20 @@ describe('SimplexController', () => {
       ).toBeRevertedWithCustomError('DurationTooShort')
     })
 
+    it('renew accepts a year, which is too short to register with', async () => {
+      const { controller, baseRegistrar } = await loadFixture()
+      await commitAndRegister(controller, 'yearrenew', registrantAccount)
+      const id = BigInt(labelhash('yearrenew'))
+      const before = await baseRegistrar.read.nameExpires([id])
+      const year = 365n * DAY
+      const price = await controller.read.rentPrice(['yearrenew', year])
+      await controller.write.renew(['yearrenew', year, zeroHash], {
+        account: registrantAccount,
+        value: price.base,
+      })
+      expect((await baseRegistrar.read.nameExpires([id])) - before).toBe(year)
+    })
+
     it('renew reverts InsufficientValue when underpaid', async () => {
       const { controller } = await loadFixture()
       await commitAndRegister(controller, 'renewpoor', registrantAccount)
@@ -1392,17 +1406,17 @@ describe('SimplexController', () => {
       ).toBeRevertedWithCustomError('DurationTooShort')
     })
 
-    it('makeCommitment refuses one day short of a year', async () => {
+    it('makeCommitment refuses one day short of two years', async () => {
       const { controller } = await loadFixture()
       await expect(
-        controller.read.makeCommitment([mkReg({ duration: 365n * DAY - DAY })]),
+        controller.read.makeCommitment([mkReg({ duration: 730n * DAY - DAY })]),
       ).toBeRevertedWithCustomError('DurationTooShort')
     })
 
-    it('makeCommitment accepts exactly a year', async () => {
+    it('makeCommitment accepts exactly two years', async () => {
       const { controller } = await loadFixture()
       await expect(
-        controller.read.makeCommitment([mkReg({ duration: 365n * DAY })]),
+        controller.read.makeCommitment([mkReg({ duration: 730n * DAY })]),
       ).resolves.toBeDefined()
     })
 
