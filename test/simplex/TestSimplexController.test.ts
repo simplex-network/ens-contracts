@@ -58,7 +58,7 @@ async function deploySimplexControllerProxy(args: {
   return { controller, implementation, proxyAddress: proxy.address }
 }
 
-const REGISTRATION_TIME = 28n * DAY
+const REGISTRATION_TIME = 365n * DAY
 const GRACE_PERIOD = 90n * DAY
 
 const connection = await hre.network.connect()
@@ -1209,6 +1209,19 @@ describe('SimplexController', () => {
       expect((await baseRegistrar.read.nameExpires([id])) > before).toBe(true)
     })
 
+    it('renew refuses one day short of a year', async () => {
+      const { controller } = await loadFixture()
+      await commitAndRegister(controller, 'shortrenew', registrantAccount)
+      const short = 365n * DAY - DAY
+      const price = await controller.read.rentPrice(['shortrenew', short])
+      await expect(
+        controller.write.renew(['shortrenew', short, zeroHash], {
+          account: registrantAccount,
+          value: price.base,
+        }),
+      ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
     it('renew reverts InsufficientValue when underpaid', async () => {
       const { controller } = await loadFixture()
       await commitAndRegister(controller, 'renewpoor', registrantAccount)
@@ -1374,6 +1387,20 @@ describe('SimplexController', () => {
       await expect(
         controller.read.makeCommitment([mkReg({ duration: 1n })]),
       ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
+    it('makeCommitment refuses one day short of a year', async () => {
+      const { controller } = await loadFixture()
+      await expect(
+        controller.read.makeCommitment([mkReg({ duration: 365n * DAY - DAY })]),
+      ).toBeRevertedWithCustomError('DurationTooShort')
+    })
+
+    it('makeCommitment accepts exactly a year', async () => {
+      const { controller } = await loadFixture()
+      await expect(
+        controller.read.makeCommitment([mkReg({ duration: 365n * DAY })]),
+      ).resolves.toBeDefined()
     })
 
     it('register reverts NameNotAvailable for an already-registered name', async () => {
