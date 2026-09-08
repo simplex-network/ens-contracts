@@ -12,6 +12,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 ///         `StablePriceOracle` the prices are `immutable`, so every change means
 ///         a new oracle and a `SimplexController.setPriceOracle`.
 ///
+///         Auctions are effectively disabled:
 ///         Lapsed names carry no premium: once the grace period is over a name
 ///         costs the same as any other.
 contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
