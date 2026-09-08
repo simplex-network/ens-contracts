@@ -1,4 +1,5 @@
 import { configVariable, task, type HardhatUserConfig } from 'hardhat/config'
+import type { HardhatPlugin } from 'hardhat/types/plugins'
 
 import dotenv from 'dotenv'
 
@@ -20,11 +21,51 @@ dotenv.config({ debug: false })
 // circular dependency shared with actions
 export const archivedDeploymentPath = './deployments/archive'
 
+// The upstream NameWrapper / ETHRegistrarController / BulkRenewal / MigrationHelper
+// subsystem is kept in the tree for parity with `simplex`, but the wrapper-free
+// redesign no longer uses it and it no longer compiles against the new
+// BaseRegistrar API. Feed solc an empty stub for those sources so the build
+// ignores their bodies (the real source stays on disk; they are also excluded
+// from vitest and tsconfig, and their deploy scripts were dropped).
+const deadCodeSources = [
+  'contracts/ethregistrar/BulkRenewal.sol',
+  'contracts/ethregistrar/ETHRegistrarController.sol',
+  'contracts/ethregistrar/IBulkRenewal.sol',
+  'contracts/ethregistrar/StaticBulkRenewal.sol',
+  'contracts/utils/MigrationHelper.sol',
+  'contracts/wrapper/Controllable.sol',
+  'contracts/wrapper/ERC1155Fuse.sol',
+  'contracts/wrapper/NameWrapper.sol',
+  'contracts/wrapper/StaticMetadataService.sol',
+  'contracts/wrapper/mocks/ERC1155ReceiverMock.sol',
+  'contracts/wrapper/mocks/TestUnwrap.sol',
+  'contracts/wrapper/mocks/UpgradedNameWrapperMock.sol',
+  'contracts/wrapper/test/NameGriefer.sol',
+  'contracts/wrapper/test/TestNameWrapperReentrancy.sol',
+]
+const deadCodeStub = '// SPDX-License-Identifier: MIT\npragma solidity >=0.8.4;\n'
+
+const excludeDeadCodeFromBuild: HardhatPlugin = {
+  id: 'snrc-exclude-dead-code',
+  hookHandlers: {
+    solidity: async () => ({
+      default: async () => ({
+        async readSourceFile(context, absolutePath, next) {
+          if (deadCodeSources.some((source) => absolutePath.endsWith(source)))
+            return deadCodeStub
+          return next(context, absolutePath)
+        },
+      }),
+    }),
+  },
+}
+
 const config = {
   networks: {
     hardhat: {
       type: 'edr-simulated',
       allowUnlimitedContractSize: false,
+      chainId: 1337,
     },
     mainnetFork: {
       type: 'edr-simulated',
@@ -32,7 +73,12 @@ const config = {
       chainId: 1,
       forking: {
         enabled: true,
-        url: `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+        // MAINNET_RPC_URL first so a fork can be driven without putting the
+        // provider key in the child's argv, where `ps` exposes it to every
+        // local user. scripts/gas-tools.mjs passes it through the environment.
+        url:
+          process.env.MAINNET_RPC_URL ||
+          `https://mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
       },
     },
     localhost: {
@@ -132,6 +178,7 @@ const config = {
     HardhatViem,
     HardhatDeploy,
     HardhatKeystore,
+    excludeDeadCodeFromBuild,
   ],
   tasks: [
     task('accounts', 'Prints the list of accounts')
