@@ -232,15 +232,13 @@ export async function signIntent(
 export const AMPLE_ALLOWANCE = 1000n * 10n ** 18n
 
 /**
- * SimplexController.Reason, mirrored for tests. Append-only on chain, so this
- * list is a copy of a decision that cannot be revised once names are reserved.
+ * SimplexController.Reason, mirrored for tests, and named the same way by the
+ * SMP protocol. Append-only on chain, so this list is a copy of a decision that
+ * cannot be revised once names are reserved.
  */
 export const Reason = {
   None: 0,
-  Unspecified: 1,
+  Internal: 1,
   Trademark: 2,
-  PublicInterest: 3,
-  Offensive: 4,
-  Internal: 5,
-  Premium: 6,
+  Community: 3,
 } as const

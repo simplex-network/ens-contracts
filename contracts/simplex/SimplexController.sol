@@ -78,14 +78,14 @@ contract SimplexController is
     ///         relabels every name already reserved under it, and nothing on
     ///         chain can detect that. `None` must stay 0 — `delete` writes zero,
     ///         and "not reserved" is the absence of a reason.
+    /// @dev Mirrored by the SMP protocol as `internal` / `trademark` /
+    ///      `community`. 1 is also what the boolean `reservedNames` of the first
+    ///      .testing deployment set, which is why it reads as Internal.
     enum Reason {
         None,
-        Unspecified,
-        Trademark,
-        PublicInterest,
-        Offensive,
         Internal,
-        Premium
+        Trademark,
+        Community
     }
 
     mapping(bytes32 => uint256) public commitments;

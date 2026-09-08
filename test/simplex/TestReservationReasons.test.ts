@@ -41,11 +41,8 @@ describe('reservation reasons', () => {
     const { controller } = await load()
     const cases = [
       ['tm', Reason.Trademark],
-      ['civic', Reason.PublicInterest],
-      ['withheld', Reason.Offensive],
       ['ours', Reason.Internal],
-      ['forsale', Reason.Premium],
-      ['nosaywhy', Reason.Unspecified],
+      ['civic', Reason.Community],
     ] as const
     for (const [label, reason] of cases) {
       await controller.write.addReservedNames([[label], reason], {
@@ -73,16 +70,16 @@ describe('reservation reasons', () => {
 
   it('reclassifies without unreserving, so no gap opens', async () => {
     const { controller } = await load()
-    await controller.write.addReservedNames([['reclassify'], Reason.Unspecified], {
+    await controller.write.addReservedNames([['reclassify'], Reason.Internal], {
       account: owner,
     })
     await controller.write.setReservationReason(
-      [['reclassify'], Reason.PublicInterest],
+      [['reclassify'], Reason.Community],
       { account: owner },
     )
     await expect(
       controller.read.reservedNames([labelhash('reclassify')]),
-    ).resolves.toBe(Reason.PublicInterest)
+    ).resolves.toBe(Reason.Community)
     // the point of the function: it never passed through unreserved
     await expect(controller.read.available(['reclassify'])).resolves.toBe(false)
   })
@@ -98,7 +95,7 @@ describe('reservation reasons', () => {
 
   it('removing clears the reason back to None', async () => {
     const { controller } = await load()
-    await controller.write.addReservedNames([['temporary'], Reason.Premium], {
+    await controller.write.addReservedNames([['temporary'], Reason.Community], {
       account: owner,
     })
     await controller.write.removeReservedNames([['temporary']], {
@@ -113,14 +110,14 @@ describe('reservation reasons', () => {
   it('carries the reason in the event indexers read', async () => {
     const { controller } = await load()
     const hash = await controller.write.addReservedNames(
-      [['indexed'], Reason.Offensive],
+      [['indexed'], Reason.Community],
       { account: owner },
     )
     await publicClient.waitForTransactionReceipt({ hash })
     const logs = await controller.getEvents.ReservedNameAdded()
     expect(logs.at(-1)?.args).toMatchObject({
       name: 'indexed',
-      reason: Reason.Offensive,
+      reason: Reason.Community,
     })
   })
 })
