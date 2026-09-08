@@ -20,20 +20,22 @@ const guardian = guardianClient.account
 const registrar = registrarClient.account
 const alice = aliceClient.account
 
+/** A dollar, in the two units in play: the list is cents, quotes are attoUSD. */
+const CENTS = 100n
 const USD = 10n ** 18n
 
-const priced = (labelLength: bigint, priceUSDPerYear: bigint) => ({
+const priced = (labelLength: bigint, priceCentsPerYear: bigint) => ({
   labelLength,
-  priceUSDPerYear,
+  priceCentsPerYear,
 })
 
 /** Base $1/yr with exceptions at 13 and 32, so the gaps show. */
-const GAPPED = [priced(13n, 4n * USD), priced(32n, 2n * USD)]
+const GAPPED = [priced(13n, 4n * CENTS), priced(32n, 2n * CENTS)]
 /** The `.simplex` launch curve: $1 at 6+, $8 at 5, $32 at 4, $128 at 3. */
 const LAUNCH = [
-  priced(3n, 128n * USD),
-  priced(4n, 32n * USD),
-  priced(5n, 8n * USD),
+  priced(3n, 128n * CENTS),
+  priced(4n, 32n * CENTS),
+  priced(5n, 8n * CENTS),
 ]
 
 const label = (len: number) => 'a'.repeat(len)
@@ -44,7 +46,7 @@ async function fixture() {
   const oracle = await connection.viem.deployContract('SimplexPriceOracle', [
     feed.address,
     8,
-    USD,
+    CENTS,
     GAPPED,
   ])
   return { feed, oracle }
@@ -68,7 +70,7 @@ describe('SimplexPriceOracle', () => {
 
     it('reproduces the launch curve exactly', async () => {
       const { oracle } = await load()
-      await oracle.write.setPrices([USD, LAUNCH], { account: owner })
+      await oracle.write.setPrices([CENTS, LAUNCH], { account: owner })
       const at = async (len: number) =>
         (await oracle.read.priceUSD([label(len), 0n, YEAR])).base
 
@@ -84,7 +86,7 @@ describe('SimplexPriceOracle', () => {
 
     it('counts codepoints, not bytes', async () => {
       const { oracle } = await load()
-      await oracle.write.setPrices([USD, LAUNCH], { account: owner })
+      await oracle.write.setPrices([CENTS, LAUNCH], { account: owner })
       // three emoji are twelve bytes but three characters
       expect((await oracle.read.priceUSD(['🚀🚀🚀', 0n, YEAR])).base).toBe(
         128n * USD,
@@ -103,9 +105,9 @@ describe('SimplexPriceOracle', () => {
 
     it('reads the curve back in the shape it was set', async () => {
       const { oracle } = await load()
-      await oracle.write.setPrices([USD, LAUNCH], { account: owner })
+      await oracle.write.setPrices([CENTS, LAUNCH], { account: owner })
       const [base, exceptions] = await oracle.read.prices()
-      expect(base).toBe(USD)
+      expect(base).toBe(CENTS)
       expect(
         [...exceptions]
           .map((e: any) => [e.labelLength, e.priceUSDPerYear])
@@ -115,11 +117,11 @@ describe('SimplexPriceOracle', () => {
 
     it('replacing the curve drops the lengths the old one listed', async () => {
       const { oracle } = await load()
-      expect(await oracle.read.priceUSDPerYear([32n])).toBe(2n * USD)
-      await oracle.write.setPrices([USD, [priced(5n, 8n * USD)]], {
+      expect(await oracle.read.priceCentsPerYear([32n])).toBe(2n * CENTS)
+      await oracle.write.setPrices([CENTS, [priced(5n, 8n * CENTS)]], {
         account: owner,
       })
-      expect(await oracle.read.priceUSDPerYear([32n])).toBe(USD)
+      expect(await oracle.read.priceCentsPerYear([32n])).toBe(CENTS)
       expect((await oracle.read.priceUSD([label(32), 0n, YEAR])).base).toBe(USD)
       const [, exceptions] = await oracle.read.prices()
       expect(exceptions.length).toBe(1)
@@ -139,7 +141,7 @@ describe('SimplexPriceOracle', () => {
 
     it('rejects a length of zero', async () => {
       const { oracle } = await load()
-      await rejects(oracle, USD, [priced(0n, 4n * USD)], 'LabelLengthOutOfRange')
+      await rejects(oracle, CENTS, [priced(0n, 4n * CENTS)], 'LabelLengthOutOfRange')
     })
 
     it('rejects a length above MAX_LABEL_LENGTH', async () => {
@@ -148,7 +150,7 @@ describe('SimplexPriceOracle', () => {
       await rejects(
         oracle,
         USD,
-        [priced(65n, 4n * USD)],
+        [priced(65n, 4n * CENTS)],
         'LabelLengthOutOfRange',
       )
     })
@@ -158,7 +160,7 @@ describe('SimplexPriceOracle', () => {
       await rejects(
         oracle,
         USD,
-        [priced(5n, 8n * USD), priced(5n, 4n * USD)],
+        [priced(5n, 8n * CENTS), priced(5n, 4n * CENTS)],
         'DuplicateLabelLength',
       )
     })
@@ -166,37 +168,37 @@ describe('SimplexPriceOracle', () => {
     // zero is how a gap is recognised, so it cannot also be a price
     it('rejects a zero-priced exception', async () => {
       const { oracle } = await load()
-      await rejects(oracle, USD, [priced(5n, 0n)], 'ZeroExceptionPrice')
+      await rejects(oracle, CENTS, [priced(5n, 0n)], 'ZeroExceptionPrice')
     })
 
     it('takes the exceptions in any order', async () => {
       const { oracle } = await load()
       await oracle.write.setPrices(
-        [USD, [priced(5n, 8n * USD), priced(3n, 128n * USD)]],
+        [CENTS, [priced(5n, 8n * CENTS), priced(3n, 128n * CENTS)]],
         { account: owner },
       )
-      expect(await oracle.read.priceUSDPerYear([3n])).toBe(128n * USD)
-      expect(await oracle.read.priceUSDPerYear([5n])).toBe(8n * USD)
+      expect(await oracle.read.priceCentsPerYear([3n])).toBe(128n * CENTS)
+      expect(await oracle.read.priceCentsPerYear([5n])).toBe(8n * CENTS)
     })
 
     // the oracle stores the curve, it does not have opinions about it
     it('accepts a longer label costing more than a shorter one', async () => {
       const { oracle } = await load()
       await oracle.write.setPrices(
-        [USD, [priced(3n, 2n * USD), priced(9n, 40n * USD)]],
+        [CENTS, [priced(3n, 2n * CENTS), priced(9n, 40n * CENTS)]],
         { account: owner },
       )
-      expect(await oracle.read.priceUSDPerYear([3n])).toBe(2n * USD)
-      expect(await oracle.read.priceUSDPerYear([9n])).toBe(40n * USD)
+      expect(await oracle.read.priceCentsPerYear([3n])).toBe(2n * CENTS)
+      expect(await oracle.read.priceCentsPerYear([9n])).toBe(40n * CENTS)
     })
 
     it('accepts a base above every exception', async () => {
       const { oracle } = await load()
-      await oracle.write.setPrices([9n * USD, [priced(5n, 8n * USD)]], {
+      await oracle.write.setPrices([9n * CENTS, [priced(5n, 8n * CENTS)]], {
         account: owner,
       })
-      expect(await oracle.read.priceUSDPerYear([5n])).toBe(8n * USD)
-      expect(await oracle.read.priceUSDPerYear([9n])).toBe(9n * USD)
+      expect(await oracle.read.priceCentsPerYear([5n])).toBe(8n * CENTS)
+      expect(await oracle.read.priceCentsPerYear([9n])).toBe(9n * CENTS)
     })
   })
 
@@ -363,7 +365,7 @@ describe('SimplexPriceOracle', () => {
     it('refuses every setter to a non-owner', async () => {
       const { oracle, feed } = await load()
       await expect(
-        oracle.write.setPrices([USD, LAUNCH], { account: alice }),
+        oracle.write.setPrices([CENTS, LAUNCH], { account: alice }),
       ).toBeRevertedWithString(OWNABLE)
       await expect(
         oracle.write.setUsdOracle([feed.address, 8], { account: alice }),
@@ -379,16 +381,16 @@ describe('SimplexPriceOracle', () => {
         guardian.address.toLowerCase(),
       )
       await expect(
-        oracle.write.setPrices([USD, LAUNCH], { account: guardian }),
+        oracle.write.setPrices([CENTS, LAUNCH], { account: guardian }),
       ).toBeRevertedWithString(OWNABLE)
 
       await oracle.write.acceptOwnership({ account: guardian })
       expect((await oracle.read.owner()).toLowerCase()).toBe(
         guardian.address.toLowerCase(),
       )
-      await oracle.write.setPrices([USD, LAUNCH], { account: guardian })
+      await oracle.write.setPrices([CENTS, LAUNCH], { account: guardian })
       await expect(
-        oracle.write.setPrices([USD, LAUNCH], { account: owner }),
+        oracle.write.setPrices([CENTS, LAUNCH], { account: owner }),
       ).toBeRevertedWithString(OWNABLE)
     })
   })
@@ -452,7 +454,7 @@ describe('SimplexPriceOracle', () => {
     it('a curve change by call moves what the next registration pays', async () => {
       const { controller, priceOracle } = await loadStack()
       const before = (await controller.read.rentPrice(['sixchr', YEAR])).base
-      await priceOracle.write.setPrices([2n * USD, LAUNCH], { account: owner })
+      await priceOracle.write.setPrices([2n * CENTS, LAUNCH], { account: owner })
       const after = (await controller.read.rentPrice(['sixchr', YEAR])).base
       expect(after).toBe(2n * USD)
       expect(after).not.toBe(before)
@@ -467,7 +469,7 @@ describe('SimplexPriceOracle', () => {
 
     it('the sponsored path spends the new price in attoUSD', async () => {
       const { controller, priceOracle } = await loadStack()
-      await priceOracle.write.setPrices([2n * USD, LAUNCH], { account: owner })
+      await priceOracle.write.setPrices([2n * CENTS, LAUNCH], { account: owner })
       // drop to five characters, the only length priced at $8
       await controller.write.setMinCharLength([5], { account: owner })
       const reg = registration('spons', alice.address)

@@ -5,19 +5,22 @@ import { DAY } from '../../fixtures/constants.js'
 
 export const YEAR = 365n * DAY
 
-/** attoUSD per year for a given yearly price in whole dollars. */
-const perYear = (usd: bigint) => usd * 10n ** 18n
+/** US cents per year for a given yearly price in whole dollars. */
+const perYear = (usd: bigint) => usd * 100n
+
+/** The oracle stores cents; `priceUSD` quotes attoUSD. */
+export const ATTO_PER_CENT = 10n ** 16n
 
 /** What a length with no exception costs: $10 a year. */
 export const PRICE_BASE = perYear(10n)
 
 /** Ten times the base for each character below six, in exact multiples. */
 export const PRICE_EXCEPTIONS = [
-  { labelLength: 1n, priceUSDPerYear: PRICE_BASE * 100000n },
-  { labelLength: 2n, priceUSDPerYear: PRICE_BASE * 10000n },
-  { labelLength: 3n, priceUSDPerYear: PRICE_BASE * 1000n },
-  { labelLength: 4n, priceUSDPerYear: PRICE_BASE * 100n },
-  { labelLength: 5n, priceUSDPerYear: PRICE_BASE * 10n },
+  { labelLength: 1n, priceCentsPerYear: PRICE_BASE * 100000n },
+  { labelLength: 2n, priceCentsPerYear: PRICE_BASE * 10000n },
+  { labelLength: 3n, priceCentsPerYear: PRICE_BASE * 1000n },
+  { labelLength: 4n, priceCentsPerYear: PRICE_BASE * 100n },
+  { labelLength: 5n, priceCentsPerYear: PRICE_BASE * 10n },
 ] as const
 
 /** The yearly price of a label of `len` characters, in attoUSD. */
@@ -25,7 +28,11 @@ export function yearPriceUSD(len: number, years = 1n) {
   const exception = PRICE_EXCEPTIONS.find(
     ({ labelLength }) => BigInt(len) === labelLength,
   )
-  return (exception ? exception.priceUSDPerYear : PRICE_BASE) * years
+  return (
+    (exception ? exception.priceCentsPerYear : PRICE_BASE) *
+    ATTO_PER_CENT *
+    years
+  )
 }
 
 /** What a one-year 6+ character name costs, in attoUSD. */

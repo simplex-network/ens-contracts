@@ -19,10 +19,14 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
 
     struct LabelPrice {
         uint256 labelLength;
-        uint256 priceUSDPerYear;
+        uint256 priceCentsPerYear;
     }
 
     uint256 public constant SECONDS_PER_YEAR = 365 days;
+
+    /// @dev The price list is kept in cents, as the SMP protocol carries it;
+    ///      `IPriceOracleUSD` quotes attoUSD, so the two read paths convert.
+    uint256 private constant ATTO_PER_CENT = 10 ** 16;
 
     /// @dev Bounds how much `setPrices` can be made to write.
     uint256 public constant MAX_LABEL_LENGTH = 64;
@@ -33,15 +37,15 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     ///      without reverting.
     uint256 public usdOracleScale;
 
-    /// @dev attoUSD per year, for every length without an exception.
-    uint256 public basePriceUSDPerYear;
+    /// @dev US cents per year, for every length without an exception.
+    uint256 public basePriceCentsPerYear;
     /// @dev Zero means no exception, so a zero price is refused.
     mapping(uint256 => uint256) public priceByLabelLength;
     /// @dev The mapping's keys: a mapping cannot be read back or cleared
     ///      without them.
     uint256[] public pricedLabelLengths;
 
-    event PricesChanged(uint256 basePriceUSDPerYear, LabelPrice[] prices);
+    event PricesChanged(uint256 basePriceCentsPerYear, LabelPrice[] prices);
     event UsdOracleChanged(address indexed usdOracle, uint8 decimals);
 
     /// @dev Zero would divide by zero; negative would wrap the cast and quote
@@ -56,20 +60,20 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     constructor(
         AggregatorInterface _usdOracle,
         uint8 _usdOracleDecimals,
-        uint256 _basePriceUSDPerYear,
+        uint256 _basePriceCentsPerYear,
         LabelPrice[] memory _prices
     ) {
         _setUsdOracle(_usdOracle, _usdOracleDecimals);
-        _setPrices(_basePriceUSDPerYear, _prices);
+        _setPrices(_basePriceCentsPerYear, _prices);
     }
 
     /// @notice Replaces the whole curve: exceptions not listed again are gone.
     ///         Order does not matter and the list may be empty.
     function setPrices(
-        uint256 newBasePriceUSDPerYear,
+        uint256 newBasePriceCentsPerYear,
         LabelPrice[] calldata newPrices
     ) external onlyOwner {
-        _setPrices(newBasePriceUSDPerYear, newPrices);
+        _setPrices(newBasePriceCentsPerYear, newPrices);
     }
 
     /// @param decimals The new feed's scale, which cannot be read from it.
@@ -80,12 +84,12 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
         _setUsdOracle(newOracle, decimals);
     }
 
-    /// @notice attoUSD per year for a label of this length.
-    function priceUSDPerYear(
+    /// @notice US cents per year for a label of this length.
+    function priceCentsPerYear(
         uint256 labelLength
     ) public view returns (uint256) {
         uint256 exception = priceByLabelLength[labelLength];
-        return exception == 0 ? basePriceUSDPerYear : exception;
+        return exception == 0 ? basePriceCentsPerYear : exception;
     }
 
     /// @notice The whole curve, in the shape `setPrices` takes.
@@ -100,10 +104,10 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
             uint256 labelLength = pricedLabelLengths[i];
             exceptions[i] = LabelPrice({
                 labelLength: labelLength,
-                priceUSDPerYear: priceByLabelLength[labelLength]
+                priceCentsPerYear: priceByLabelLength[labelLength]
             });
         }
-        base = basePriceUSDPerYear;
+        base = basePriceCentsPerYear;
     }
 
     function price(
@@ -140,7 +144,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     }
 
     function _setPrices(
-        uint256 newBasePriceUSDPerYear,
+        uint256 newBasePriceCentsPerYear,
         LabelPrice[] memory newPrices
     ) internal {
         uint256 previous = pricedLabelLengths.length;
@@ -151,7 +155,7 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
 
         for (uint256 i; i < newPrices.length; ++i) {
             uint256 labelLength = newPrices[i].labelLength;
-            uint256 perYear = newPrices[i].priceUSDPerYear;
+            uint256 perYear = newPrices[i].priceCentsPerYear;
             if (labelLength == 0 || labelLength > MAX_LABEL_LENGTH)
                 revert LabelLengthOutOfRange(labelLength);
             if (perYear == 0) revert ZeroExceptionPrice(labelLength);
@@ -162,9 +166,9 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
             pricedLabelLengths.push(labelLength);
         }
 
-        basePriceUSDPerYear = newBasePriceUSDPerYear;
+        basePriceCentsPerYear = newBasePriceCentsPerYear;
 
-        emit PricesChanged(newBasePriceUSDPerYear, newPrices);
+        emit PricesChanged(newBasePriceCentsPerYear, newPrices);
     }
 
     function _setUsdOracle(
@@ -188,8 +192,9 @@ contract SimplexPriceOracle is IPriceOracleUSD, Ownable2Step {
     ) internal view returns (IPriceOracle.Price memory) {
         return
             IPriceOracle.Price({
-                base: (priceUSDPerYear(label.strlen()) * duration) /
-                    SECONDS_PER_YEAR,
+                base: (priceCentsPerYear(label.strlen()) *
+                    ATTO_PER_CENT *
+                    duration) / SECONDS_PER_YEAR,
                 premium: 0
             });
     }
