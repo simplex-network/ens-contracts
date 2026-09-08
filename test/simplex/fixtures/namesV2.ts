@@ -5,33 +5,34 @@ import { DAY } from '../../fixtures/constants.js'
 
 export const YEAR = 365n * DAY
 
-/** attoUSD per second for a given yearly price in whole dollars. */
-const perYear = (usd: bigint) => (usd * 10n ** 18n) / YEAR
+/** US cents per year for a given yearly price in whole dollars. */
+const perYear = (usd: bigint) => usd * 100n
 
-/** The 6+ rung: $10 a year, to the nearest attoUSD per second. */
-const BASE = perYear(10n)
+/** The oracle stores cents; `priceUSD` quotes attoUSD. */
+export const ATTO_PER_CENT = 10n ** 16n
 
-/**
- * attoUSD per second, by label length: [1, 2, 3, 4, 5, 6+]. $10 a year at six
- * characters and above, ten times more for each character lost. Built as exact
- * multiples of the 6+ rung so the ratios hold without rounding drift; the
- * dollar figures are therefore $10 to within a part in 1e12, not to the wei.
- * The sixth entry is what splits 6+ from 5 — a five-entry array leaves them
- * priced identically.
- */
-export const PRICE_CURVE = [
-  BASE * 100000n,
-  BASE * 10000n,
-  BASE * 1000n,
-  BASE * 100n,
-  BASE * 10n,
-  BASE,
+/** What a length with no exception costs: $10 a year. */
+export const PRICE_BASE = perYear(10n)
+
+/** Ten times the base for each character below six, in exact multiples. */
+export const PRICE_EXCEPTIONS = [
+  { labelLength: 1n, priceCentsPerYear: PRICE_BASE * 100000n },
+  { labelLength: 2n, priceCentsPerYear: PRICE_BASE * 10000n },
+  { labelLength: 3n, priceCentsPerYear: PRICE_BASE * 1000n },
+  { labelLength: 4n, priceCentsPerYear: PRICE_BASE * 100n },
+  { labelLength: 5n, priceCentsPerYear: PRICE_BASE * 10n },
 ] as const
 
 /** The yearly price of a label of `len` characters, in attoUSD. */
 export function yearPriceUSD(len: number, years = 1n) {
-  const idx = len >= 6 ? 5 : len - 1
-  return PRICE_CURVE[idx] * YEAR * years
+  const exception = PRICE_EXCEPTIONS.find(
+    ({ labelLength }) => BigInt(len) === labelLength,
+  )
+  return (
+    (exception ? exception.priceCentsPerYear : PRICE_BASE) *
+    ATTO_PER_CENT *
+    years
+  )
 }
 
 /** What a one-year 6+ character name costs, in attoUSD. */
@@ -65,13 +66,16 @@ export async function deployNamesV2(
   )
   await ens.write.setSubnodeOwner([zeroHash, labelhash(TLD), baseRegistrar.address])
 
-  // The real `.simplex` curve, in attoUSD per second: $1/yr at 5+ characters,
-  // $32 at 4, $128 at 3. With the feed pinned to 1e8 below, 1 attoUSD is 1 wei,
-  // so a one-year 6-character name costs ~0.9993 ETH in these tests.
+  // $10/yr at 6+ characters, ten times more for each character lost. With the
+  // feed pinned to 1e8 below, 1 attoUSD is 1 wei, so a one-year 6-character name
+  // costs 10 ETH in these tests. No premium: an expired name is priced at plain
+  // rent, as `StablePriceOracle` did before.
   const dummyOracle = await viem.deployContract('DummyOracle', [100000000n])
-  const priceOracle = await viem.deployContract('StablePriceOracle', [
+  const priceOracle = await viem.deployContract('SimplexPriceOracle', [
     dummyOracle.address,
-    PRICE_CURVE,
+    8, // feed decimals: DummyOracle mimics Chainlink's 8
+    PRICE_BASE,
+    PRICE_EXCEPTIONS,
   ])
 
   const implementation = await viem.deployContract('SimplexController', [])
