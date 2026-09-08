@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { deployNamesV2, node, YEAR } from './fixtures/namesV2.js'
 import { DAY } from '../fixtures/constants.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+
 const connection = await hre.network.connect()
 const [ownerClient, guardianClient, , brandClient] =
   await connection.viem.getWalletClients()
@@ -61,7 +63,7 @@ describe('no reverse resolution', () => {
 describe('registerReserved', () => {
   it('gives the brand the token, the registry node and a working resolver', async () => {
     const { controller, ens, baseRegistrar, resolver } = await load()
-    await controller.write.addReservedNames([['brandname']], { account: owner })
+    await controller.write.addReservedNames([['brandname'], TRADEMARK], { account: owner })
     await controller.write.registerReserved(['brandname', brand.address, YEAR], {
       account: owner,
     })
@@ -81,7 +83,7 @@ describe('registerReserved', () => {
 
   it('the brand can then have records relayed without ever holding ETH', async () => {
     const { controller, resolver } = await load()
-    await controller.write.addReservedNames([['relayable']], { account: owner })
+    await controller.write.addReservedNames([['relayable'], TRADEMARK], { account: owner })
     await controller.write.registerReserved(['relayable', brand.address, YEAR], {
       account: owner,
     })
@@ -101,7 +103,7 @@ describe('registerReserved', () => {
 
   it('refuses a duration below the minimum', async () => {
     const { controller } = await load()
-    await controller.write.addReservedNames([['tooshortterm']], {
+    await controller.write.addReservedNames([['tooshortterm'], TRADEMARK], {
       account: owner,
     })
     await expect(
@@ -114,7 +116,7 @@ describe('registerReserved', () => {
 
   it('is owner-only — the guardian may reserve but not hand out', async () => {
     const { controller } = await load()
-    await controller.write.addReservedNames([['guardedname']], {
+    await controller.write.addReservedNames([['guardedname'], TRADEMARK], {
       account: guardian,
     })
     await expect(
@@ -147,7 +149,7 @@ describe('registerReserved', () => {
       value: 10n ** 21n,
     })
 
-    await controller.write.addReservedNames([['alreadyheld']], {
+    await controller.write.addReservedNames([['alreadyheld'], TRADEMARK], {
       account: owner,
     })
     await expect(
@@ -166,7 +168,7 @@ describe('registerReserved', () => {
   it('degrades to a bare registration when no default resolver is set', async () => {
     const { controller, ens } = await load()
     await controller.write.setDefaultResolver([zeroAddress], { account: owner })
-    await controller.write.addReservedNames([['noresolver']], {
+    await controller.write.addReservedNames([['noresolver'], TRADEMARK], {
       account: owner,
     })
     await controller.write.registerReserved(

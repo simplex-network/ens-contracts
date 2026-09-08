@@ -9,6 +9,8 @@ import {
   yearPriceUSD,
 } from './fixtures/namesV2.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+
 const connection = await hre.network.connect()
 const [ownerClient, guardianClient, registrarClient, aliceClient] =
   await connection.viem.getWalletClients()
@@ -84,7 +86,7 @@ describe('reservation vs. registration race', () => {
       { account: squatter },
     )
     // the reservation mines in the next block, long before 60s elapse
-    await controller.write.addReservedNames([['targetname']], {
+    await controller.write.addReservedNames([['targetname'], TRADEMARK], {
       account: guardian,
     })
 
@@ -111,7 +113,7 @@ describe('reservation vs. registration race', () => {
     await connection.networkHelpers.time.increase(Number(MIN_COMMITMENT_AGE) + 1)
 
     // the reservation still wins, because it is checked at registration time
-    await controller.write.addReservedNames([['warmtarget']], {
+    await controller.write.addReservedNames([['warmtarget'], TRADEMARK], {
       account: guardian,
     })
     await expect(
@@ -151,7 +153,7 @@ describe('reservation vs. registration race', () => {
 
   it('registerReserved needs no commitment, so the owner is never in the race', async () => {
     const { controller, baseRegistrar } = await load()
-    await controller.write.addReservedNames([['ownerhands']], {
+    await controller.write.addReservedNames([['ownerhands'], TRADEMARK], {
       account: guardian,
     })
     await controller.write.registerReserved(

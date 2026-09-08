@@ -18,6 +18,9 @@ import {
   yearPriceUSD,
 } from './fixtures/namesV2.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+const NONE = 0 // SimplexController.Reason.None
+
 /**
  * The launch plan, walked end to end on one chain in the order it happens:
  * deployment, the a-priori reservation, the governance handover, the investor
@@ -210,6 +213,7 @@ describe('launch lifecycle', () => {
       for (let i = 0; i < aPriori.length; i += APRIORI_BATCH) {
         const hash = await controller.write.addReservedNames([
           aPriori.slice(i, i + APRIORI_BATCH),
+          TRADEMARK,
         ])
         totalGas += (await publicClient.getTransactionReceipt({ hash })).gasUsed
       }
@@ -218,11 +222,11 @@ describe('launch lifecycle', () => {
       expect(perName).toBeLessThan(30000n)
       for (const label of ['brand0000', 'brand1499', 'brand2999']) {
         expect(await controller.read.reservedNames([labelhash(label)])).toBe(
-          true,
+          TRADEMARK,
         )
       }
       expect(await controller.read.reservedNames([labelhash('notabrand')])).toBe(
-        false,
+        NONE,
       )
     }, 120000)
 
@@ -687,11 +691,11 @@ describe('launch lifecycle', () => {
 
   describe('7. brand reservations during the window', () => {
     it('the guardian reserves a name under threat, immediately', async () => {
-      await controller.write.addReservedNames([['newbrand']], {
+      await controller.write.addReservedNames([['newbrand'], TRADEMARK], {
         account: guardian,
       })
       expect(await controller.read.reservedNames([labelhash('newbrand')])).toBe(
-        true,
+        TRADEMARK,
       )
     })
 
@@ -725,7 +729,7 @@ describe('launch lifecycle', () => {
         account: admin,
       })
       expect(await controller.read.reservedNames([labelhash('brand2999')])).toBe(
-        false,
+        NONE,
       )
     })
   })
@@ -876,7 +880,7 @@ describe('launch lifecycle', () => {
     })
 
     it('brand outreach continues with no horizon', async () => {
-      await controller.write.addReservedNames([['latebrand']], {
+      await controller.write.addReservedNames([['latebrand'], TRADEMARK], {
         account: guardian,
       })
       await controller.write.registerReserved(
@@ -973,7 +977,7 @@ describe('launch lifecycle', () => {
       const held = 'freshname'
       const tokenId = BigInt(labelhash(held))
       // admin cannot re-register it
-      await controller.write.addReservedNames([[held]], { account: admin })
+      await controller.write.addReservedNames([[held], TRADEMARK], { account: admin })
       await expect(
         controller.write.registerReserved([held, admin.address, YEAR], {
           account: admin,

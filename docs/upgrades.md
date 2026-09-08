@@ -55,6 +55,13 @@ every slot below it, and so the feature can be reintroduced by re-typing the slo
 rather than migrating storage. **Removing a variable is not a substitute for
 reserving its slot** — see invariant 2.
 
+### `Reason` is storage
+
+`reservedNames` holds `Reason`, and an enum is stored as its member's position.
+Once `.simplex` has reservations, reordering or removing a member relabels every
+name reserved under it, with nothing on chain to detect it. Treat the enum as
+append-only from then on, and keep `None` at 0 — `delete` writes zero.
+
 ## Invariants (do not break these)
 
 1. **Append only, from the front of `__gap`.** A new state variable is declared

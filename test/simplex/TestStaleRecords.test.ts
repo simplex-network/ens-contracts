@@ -11,6 +11,8 @@ import {
 } from './fixtures/namesV2.js'
 import { DAY } from '../fixtures/constants.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+
 const connection = await hre.network.connect()
 const [ownerClient, guardianClient, registrarClient, squatterClient, victimClient] =
   await connection.viem.getWalletClients()
@@ -175,7 +177,7 @@ describe('records do not survive re-registration', () => {
     )
     await connection.networkHelpers.time.increase(Number(YEAR + GRACE + 1n))
 
-    await controller.write.addReservedNames([['brandname']], { account: owner })
+    await controller.write.addReservedNames([['brandname'], TRADEMARK], { account: owner })
     await controller.write.registerReserved(
       ['brandname', victim.address, YEAR],
       { account: owner },
@@ -250,7 +252,7 @@ describe('renewal and availability semantics', () => {
   it('available() reports a reserved name as unavailable', async () => {
     const { controller } = await load()
     expect(await controller.read.available(['freename'])).toBe(true)
-    await controller.write.addReservedNames([['freename']], { account: owner })
+    await controller.write.addReservedNames([['freename'], TRADEMARK], { account: owner })
     expect(await controller.read.available(['freename'])).toBe(false)
   })
 

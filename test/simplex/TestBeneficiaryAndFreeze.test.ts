@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 
 import { AMPLE_ALLOWANCE, deployNamesV2, registration, YEAR } from './fixtures/namesV2.js'
 
+const TRADEMARK = 2 // SimplexController.Reason.Trademark
+
 const connection = await hre.network.connect()
 const publicClient = await connection.viem.getPublicClient()
 const testClient = await connection.viem.getTestClient()
@@ -143,7 +145,7 @@ describe('freeze', () => {
     await controller.write.freeze({ account: owner })
 
     // brand outreach continues with no horizon
-    await controller.write.addReservedNames([['brandish']], { account: owner })
+    await controller.write.addReservedNames([['brandish'], TRADEMARK], { account: owner })
     await controller.write.registerReserved(['brandish', alice.address, YEAR], {
       account: owner,
     })

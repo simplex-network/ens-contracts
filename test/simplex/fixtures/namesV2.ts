@@ -234,3 +234,11 @@ export async function signIntent(
 
 /** Enough allowance that a test never has to think about it: $1000. */
 export const AMPLE_ALLOWANCE = 1000n * 10n ** 18n
+
+/** SimplexController.Reason. Append-only on chain: these numbers are storage. */
+export const Reason = {
+  None: 0,
+  Internal: 1,
+  Trademark: 2,
+  Community: 3,
+} as const
