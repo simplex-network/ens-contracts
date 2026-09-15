@@ -12,7 +12,6 @@ import "./profiles/NameResolver.sol";
 import "./profiles/PubkeyResolver.sol";
 import "./profiles/TextResolver.sol";
 import "./Multicallable.sol";
-import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
 import {INameWrapper} from "../wrapper/INameWrapper.sol";
 
 /// A simple resolver anyone can use; only allows the owner of a node to set its
@@ -27,8 +26,7 @@ contract PublicResolver is
     InterfaceResolver,
     NameResolver,
     PubkeyResolver,
-    TextResolver,
-    ReverseClaimer
+    TextResolver
 {
     ENS immutable ens;
     INameWrapper immutable nameWrapper;
@@ -68,7 +66,7 @@ contract PublicResolver is
         INameWrapper wrapperAddress,
         address _trustedETHController,
         address _trustedReverseRegistrar
-    ) ReverseClaimer(_ens, msg.sender) {
+    ) {
         ens = _ens;
         nameWrapper = wrapperAddress;
         trustedETHController = _trustedETHController;
