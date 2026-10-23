@@ -602,9 +602,6 @@ describe('SimplexController', () => {
       const { controller, namePolicy } = await loadFixture()
       // Mutate some state through the proxy to prove it survives the upgrade.
       await controller.write.setMinCharLength([5], { account: ownerAccount })
-      await namePolicy.write.addReservedNames([['preserveme'], TRADEMARK], {
-        account: ownerAccount,
-      })
 
       const newImpl = await connection.viem.deployContract(
         'SimplexController',
@@ -615,7 +612,9 @@ describe('SimplexController', () => {
       })
 
       expect(await controller.read.minCharLength()).toBe(5)
-      expect(await controller.read.available(['preserveme'])).toBe(false)
+      expect((await controller.read.namePolicy()).toLowerCase()).toBe(
+        namePolicy.address.toLowerCase(),
+      )
     })
 
     it('upgraded controller can still register names', async () => {

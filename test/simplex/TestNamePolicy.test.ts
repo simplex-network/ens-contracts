@@ -25,6 +25,7 @@ const TERMS = keccak256(toHex('bona fide community terms v1'))
 const KEY = 'simplex.contact'
 
 const connection = await hre.network.connect()
+const testClient = await connection.viem.getTestClient()
 const [ownerClient, guardianClient, , aliceClient, brandClient] =
   await connection.viem.getWalletClients()
 const owner = ownerClient.account
@@ -82,6 +83,51 @@ async function lapseWithRecord(f: Fixture, label: string) {
 }
 
 describe('name policy', () => {
+  describe('the two lists', () => {
+    it('removing a name from one list leaves it on the other', async () => {
+      const { namePolicy } = await load()
+      const id = labelhash('bothlists')
+      await namePolicy.write.addBonaFideNames([['bothlists']], {
+        account: owner,
+      })
+      await namePolicy.write.addReservedNames(
+        [['bothlists'], Reason.Trademark],
+        { account: owner },
+      )
+      await namePolicy.write.removeReservedNames([['bothlists']], {
+        account: owner,
+      })
+      expect(await namePolicy.read.bonaFideNames([id])).toBe(true)
+
+      await namePolicy.write.addReservedNames(
+        [['bothlists'], Reason.Trademark],
+        { account: owner },
+      )
+      await namePolicy.write.removeBonaFideNames([['bothlists']], {
+        account: owner,
+      })
+      expect(await namePolicy.read.reservedNames([id])).toBe(Reason.Trademark)
+    })
+
+    it('registerReserved releases the reservation and keeps the bona fide listing', async () => {
+      const { namePolicy } = await load()
+      const id = labelhash('bothlists')
+      await namePolicy.write.addBonaFideNames([['bothlists']], {
+        account: owner,
+      })
+      await namePolicy.write.addReservedNames(
+        [['bothlists'], Reason.Trademark],
+        { account: owner },
+      )
+      await namePolicy.write.registerReserved(
+        ['bothlists', brand.address, MIN_REGISTRATION],
+        { account: owner },
+      )
+      expect(await namePolicy.read.reservedNames([id])).toBe(Reason.None)
+      expect(await namePolicy.read.bonaFideNames([id])).toBe(true)
+    })
+  })
+
   describe('upgrades', () => {
     it('only the controller owner upgrades the policy', async () => {
       const { controller, baseRegistrar, namePolicy } = await load()
@@ -112,9 +158,9 @@ describe('name policy', () => {
     })
 
     it('an upgrade reverts for an implementation bound to another controller or registrar', async () => {
-      const { controller, baseRegistrar, namePolicy } = await load()
+      const { controller, baseRegistrar, namePolicy, implementation } = await load()
       for (const next of [
-        await implementationBoundTo(alice.address, baseRegistrar.address),
+        await implementationBoundTo(implementation.address, baseRegistrar.address),
         await implementationBoundTo(controller.address, alice.address),
       ]) {
         await expect(
@@ -282,12 +328,12 @@ describe('name policy', () => {
     })
 
     it('setNamePolicy reverts for zero and for a policy bound to another controller', async () => {
-      const { controller, baseRegistrar, namePolicy } = await load()
+      const { controller, baseRegistrar, namePolicy, implementation } = await load()
       await expect(
         controller.write.setNamePolicy([zeroAddress], { account: owner }),
       ).toBeRevertedWithCustomError('ZeroAddress')
       const boundElsewhere = await implementationBoundTo(
-        alice.address,
+        implementation.address,
         baseRegistrar.address,
       )
       await expect(
@@ -298,6 +344,68 @@ describe('name policy', () => {
       expect(await controller.read.namePolicy()).toBe(
         getAddress(namePolicy.address),
       )
+    })
+  })
+
+  describe('the implementation', () => {
+    it('reverts every write made to it directly', async () => {
+      const { namePolicyImplementation } = await load()
+      await expect(
+        namePolicyImplementation.write.addReservedNames(
+          [['brandname'], Reason.Trademark],
+          { account: guardian },
+        ),
+      ).toBeRevertedWithCustomError('NotProxy')
+      await expect(
+        namePolicyImplementation.write.setTerms([TERMS, 'https://terms'], {
+          account: owner,
+        }),
+      ).toBeRevertedWithCustomError('NotProxy')
+    })
+
+    it("the controller's setNamePolicy reverts for it", async () => {
+      const { controller, namePolicy, namePolicyImplementation } = await load()
+      await expect(
+        controller.write.setNamePolicy([namePolicyImplementation.address], {
+          account: owner,
+        }),
+      ).toBeRevertedWithCustomErrorFrom(namePolicyImplementation, 'NotProxy')
+      expect(await controller.read.namePolicy()).toBe(
+        getAddress(namePolicy.address),
+      )
+    })
+
+    it('a registration hook call reverts even from the controller', async () => {
+      const { controller, namePolicyImplementation } = await load()
+      await testClient.impersonateAccount({ address: controller.address })
+      await testClient.setBalance({
+        address: controller.address,
+        value: 10n ** 18n,
+      })
+      await expect(
+        namePolicyImplementation.write.consumeRegistration(
+          ['brandname', labelhash('brandname'), zeroHash, alice.address],
+          { account: controller.address },
+        ),
+      ).toBeRevertedWithCustomError('NotProxy')
+    })
+
+    it('a registrar pointed at it reverts every claim', async () => {
+      const f = await load()
+      await registerForAlice(f, registration('heldname', alice.address))
+      const id = BigInt(labelhash('heldname'))
+      await f.baseRegistrar.write.approve([brand.address, id], {
+        account: alice,
+      })
+      await f.baseRegistrar.write.setNamePolicy(
+        [f.namePolicyImplementation.address],
+        { account: owner },
+      )
+      await expect(
+        f.baseRegistrar.write.transferFrom([alice.address, brand.address, id], {
+          account: brand,
+        }),
+      ).toBeRevertedWithCustomErrorFrom(f.namePolicyImplementation, 'NotProxy')
     })
   })
 })

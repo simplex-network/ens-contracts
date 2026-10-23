@@ -4,12 +4,16 @@ pragma solidity ~0.8.26;
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {BaseRegistrarImplementation} from "../ethregistrar/BaseRegistrarImplementation.sol";
+import {ENS} from "../registry/ENS.sol";
 import {INamePolicy} from "./INamePolicy.sol";
-import {IClearableResolver, SimplexController} from "./SimplexController.sol";
+import {IClearableResolver, MAX_SPONSORED_REGISTRATION, MIN_REGISTRATION, SimplexController} from "./SimplexController.sol";
 
 contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
     SimplexController public immutable controller;
     BaseRegistrarImplementation public immutable registrar;
+    ENS private immutable _ens;
+    bytes32 private immutable _tldNode;
+    address private immutable _self = address(this);
 
     /// @dev APPEND ONLY once names are reserved. The members are stored as their
     ///      positions, so reordering or removing one silently relabels every name
@@ -23,15 +27,19 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         Community
     }
 
-    mapping(bytes32 => bool) public bonaFideNames;
+    struct NameEntry {
+        bool bonaFide;
+        Reason reserved;
+    }
+
+    /// @dev Reason.None means not reserved, so this one mapping answers both
+    ///      "is it reserved" and "why" - the two cannot drift apart.
+    mapping(bytes32 => NameEntry) private _names;
     bytes32 public termsHash;
     mapping(bytes32 => mapping(address => bytes32)) public acceptedTerms;
     mapping(uint256 => mapping(address => mapping(address => mapping(uint256 => bytes32))))
         public acceptedClaimTerms;
     mapping(address => uint256) public nonces;
-    /// @dev Reason.None means not reserved, so this one mapping answers both
-    ///      "is it reserved" and "why" - the two cannot drift apart.
-    mapping(bytes32 => Reason) public reservedNames;
 
     bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
         keccak256(
@@ -48,13 +56,13 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
             "AcceptBonaFideTermsForClaim(uint256 tokenId,address from,uint256 offer,bytes32 termsHash,uint256 nonce,uint256 deadline)"
         );
 
+    event ReservedNameAdded(string name, Reason reason);
+    event ReservedNameReasonChanged(string name, Reason reason);
+    event ReservedNameRemoved(string name);
     event BonaFideNameAdded(string name);
     event BonaFideNameSkipped(string name);
     event BonaFideNameRemoved(string name);
     event TermsSet(bytes32 termsHash, string termsURI);
-    event ReservedNameAdded(string name, Reason reason);
-    event ReservedNameReasonChanged(string name, Reason reason);
-    event ReservedNameRemoved(string name);
     event BonaFideTermsAccepted(
         string name,
         address indexed holder,
@@ -78,6 +86,7 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
     error DurationTooLong(uint256 duration);
     error Frozen();
     error ImplementationMismatch();
+    error NotProxy();
 
     constructor(
         SimplexController _controller,
@@ -85,14 +94,18 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
     ) {
         controller = _controller;
         registrar = _registrar;
+        _ens = _controller.ens();
+        _tldNode = _controller.tldNode();
     }
 
     modifier onlyOwner() {
+        if (address(this) == _self) revert NotProxy();
         if (msg.sender != controller.owner()) revert NotOwner();
         _;
     }
 
     modifier onlyOwnerOrBeneficiary() {
+        if (address(this) == _self) revert NotProxy();
         if (msg.sender != controller.owner() && msg.sender != controller.beneficiary())
             revert NotOwnerOrBeneficiary();
         _;
@@ -107,7 +120,7 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
     ) external onlyOwnerOrBeneficiary {
         if (reason == Reason.None) revert ReasonRequired();
         for (uint256 i = 0; i < names.length; ++i) {
-            reservedNames[keccak256(bytes(names[i]))] = reason;
+            _names[keccak256(bytes(names[i]))].reserved = reason;
             emit ReservedNameAdded(names[i], reason);
         }
     }
@@ -121,9 +134,9 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         if (reason == Reason.None) revert ReasonRequired();
         for (uint256 i = 0; i < names.length; ++i) {
             bytes32 labelhash = keccak256(bytes(names[i]));
-            if (reservedNames[labelhash] == Reason.None)
+            if (_names[labelhash].reserved == Reason.None)
                 revert NameNotReserved(names[i]);
-            reservedNames[labelhash] = reason;
+            _names[labelhash].reserved = reason;
             emit ReservedNameReasonChanged(names[i], reason);
         }
     }
@@ -132,13 +145,13 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
     ///         one. Each removal emits a `ReservedNameRemoved` event.
     function removeReservedNames(string[] calldata names) external onlyOwner {
         for (uint256 i = 0; i < names.length; ++i) {
-            delete reservedNames[keccak256(bytes(names[i]))];
+            delete _names[keccak256(bytes(names[i]))].reserved;
             emit ReservedNameRemoved(names[i]);
         }
     }
 
     /// @notice Hand a reserved name to its brand. Sets the default resolver on
-    ///         the node and grants edit credits, so the name resolves immediately
+    ///         the node, so the name resolves immediately
     ///         and the brand's later record edits can be relayed — a brand never
     ///         has to hold ETH. `setSubnodeOwner` alone sets an owner but not a
     ///         resolver, so without this the name would not resolve at all.
@@ -149,29 +162,36 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         uint256 duration
     ) external onlyOwner {
         bytes32 labelhash = keccak256(bytes(label));
-        if (reservedNames[labelhash] == Reason.None)
+        if (_names[labelhash].reserved == Reason.None)
             revert NameNotReserved(label);
-        if (duration < controller.MIN_REGISTRATION_DURATION())
+        if (duration < MIN_REGISTRATION)
             revert DurationTooShort(duration);
-        if (duration > controller.MAX_SPONSORED_REGISTRATION_DURATION())
+        if (duration > MAX_SPONSORED_REGISTRATION)
             revert DurationTooLong(duration);
 
-        delete reservedNames[labelhash];
+        delete _names[labelhash].reserved;
         emit ReservedNameRemoved(label);
 
-        bytes32 namehash = keccak256(
-            abi.encodePacked(controller.tldNode(), labelhash)
-        );
+        bytes32 namehash = keccak256(abi.encodePacked(_tldNode, labelhash));
         registrar.registerWithLabel(label, address(this), duration);
         _retireStaleRecords(namehash);
         address resolver = controller.defaultResolver();
         if (resolver != address(0))
-            controller.ens().setRecord(namehash, address(this), resolver, 0);
+            _ens.setRecord(namehash, address(this), resolver, 0);
         registrar.transferFrom(address(this), owner, uint256(labelhash));
     }
 
+    function reservedNames(bytes32 labelhash) external view returns (Reason) {
+        return _names[labelhash].reserved;
+    }
+
     function isReserved(bytes32 labelhash) external view returns (bool) {
-        return reservedNames[labelhash] != Reason.None;
+        if (address(this) == _self) revert NotProxy();
+        return _names[labelhash].reserved != Reason.None;
+    }
+
+    function bonaFideNames(bytes32 labelhash) external view returns (bool) {
+        return _names[labelhash].bonaFide;
     }
 
     function addBonaFideNames(
@@ -183,14 +203,14 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
                 emit BonaFideNameSkipped(names[i]);
                 continue;
             }
-            bonaFideNames[labelhash] = true;
+            _names[labelhash].bonaFide = true;
             emit BonaFideNameAdded(names[i]);
         }
     }
 
     function removeBonaFideNames(string[] calldata names) external onlyOwner {
         for (uint256 i = 0; i < names.length; ++i) {
-            delete bonaFideNames[keccak256(bytes(names[i]))];
+            delete _names[keccak256(bytes(names[i]))].bonaFide;
             emit BonaFideNameRemoved(names[i]);
         }
     }
@@ -283,8 +303,10 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         address owner
     ) external {
         if (msg.sender != address(controller)) revert NotController();
-        if (reservedNames[labelhash] != Reason.None) revert NameReserved(label);
-        if (!bonaFideNames[labelhash]) return;
+        if (address(this) == _self) revert NotProxy();
+        NameEntry memory entry = _names[labelhash];
+        if (entry.reserved != Reason.None) revert NameReserved(label);
+        if (!entry.bonaFide) return;
         bytes32 accepted = acceptedTerms[commitment][owner];
         if (!_isCurrentTerms(accepted)) revert TermsNotAccepted(label);
         delete acceptedTerms[commitment][owner];
@@ -299,7 +321,8 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         string calldata label
     ) external {
         if (msg.sender != address(registrar)) revert NotRegistrar();
-        if (!bonaFideNames[bytes32(tokenId)]) return;
+        if (address(this) == _self) revert NotProxy();
+        if (!_names[bytes32(tokenId)].bonaFide) return;
         bytes32 accepted = acceptedClaimTerms[tokenId][from][to][offer];
         if (!_isCurrentTerms(accepted)) revert TermsNotAccepted(label);
         delete acceptedClaimTerms[tokenId][from][to][offer];
@@ -319,17 +342,8 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
             );
     }
 
-    function _authorizeUpgrade(
-        address newImplementation
-    ) internal view override onlyOwner {
-        if (controller.frozen()) revert Frozen();
-        SimplexNamePolicy next = SimplexNamePolicy(newImplementation);
-        if (next.controller() != controller || next.registrar() != registrar)
-            revert ImplementationMismatch();
-    }
-
     function _retireStaleRecords(bytes32 node) private {
-        address stale = controller.ens().resolver(node);
+        address stale = _ens.resolver(node);
         if (stale != address(0) && controller.wasDefaultResolver(stale))
             IClearableResolver(stale).clearRecords(node);
     }
@@ -383,5 +397,14 @@ contract SimplexNamePolicy is INamePolicy, UUPSUpgradeable {
         }
     }
 
-    uint256[44] private __gap;
+    function _authorizeUpgrade(
+        address newImplementation
+    ) internal view override onlyOwner {
+        if (controller.frozen()) revert Frozen();
+        SimplexNamePolicy next = SimplexNamePolicy(newImplementation);
+        if (next.controller() != controller || next.registrar() != registrar)
+            revert ImplementationMismatch();
+    }
+
+    uint256[45] private __gap;
 }
