@@ -534,7 +534,7 @@ contract BaseRegistrarImplementation is
     ) internal override {
         super._beforeTokenTransfer(from, to, firstTokenId, batchSize);
         if (from != address(0) && to != address(0)) {
-            if (namePolicy != address(0) && !controllers[msg.sender]) {
+            if (!controllers[msg.sender] && namePolicy != address(0)) {
                 INamePolicy(namePolicy).consumeTransfer(
                     firstTokenId,
                     from,

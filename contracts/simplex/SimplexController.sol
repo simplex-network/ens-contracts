@@ -24,9 +24,12 @@ interface IClearableResolver {
     function clearRecords(bytes32 node) external;
 }
 
+uint256 constant MIN_REGISTRATION = 730 days;
+uint256 constant MAX_SPONSORED_REGISTRATION = 4015 days;
+
 /// @dev Fork of ETHRegistrarController with additional access controls:
 ///      - Minimum name length gate (admin can lower monotonically)
-///      - Reserved names, held by the name policy contract
+///      - Reserved names (admin-managed blocklist)
 ///      - NFT gate (optional, for .testing TLD)
 ///
 ///      Deployed behind an ERC1967 proxy (UUPS). The implementation has
@@ -41,10 +44,10 @@ contract SimplexController is
 {
     using StringUtils for *;
 
-    uint256 public constant MIN_REGISTRATION_DURATION = 730 days;
+    uint256 public constant MIN_REGISTRATION_DURATION = MIN_REGISTRATION;
     uint256 public constant MIN_RENEWAL_DURATION = 365 days;
     uint256 public constant MAX_REGISTRATION_DURATION = 1095 days;
-    uint256 public constant MAX_SPONSORED_REGISTRATION_DURATION = 4015 days;
+    uint256 public constant MAX_SPONSORED_REGISTRATION_DURATION = MAX_SPONSORED_REGISTRATION;
 
     // Manual reentrancy guard (see `_reentrancyStatus` + `nonReentrant`).
     // Implemented by hand rather than inheriting ReentrancyGuardUpgradeable so
@@ -278,6 +281,7 @@ contract SimplexController is
         if (newNamePolicy == address(0)) revert ZeroAddress();
         if (INamePolicyBinding(newNamePolicy).controller() != address(this))
             revert NamePolicyMismatch();
+        INamePolicy(newNamePolicy).isReserved(0);
         namePolicy = newNamePolicy;
         emit NamePolicyChanged(newNamePolicy);
     }
@@ -291,9 +295,10 @@ contract SimplexController is
         emit PublicSalesOpenChanged(open);
     }
 
-    /// @notice One-way. Makes the implementation and the sponsor permanent and locks the sales
-    ///         switch in its current position. Everything else the owner can do
-    ///         survives, including `setPriceOracle` and the reserved-name setters.
+    /// @notice One-way. Makes the implementation, the name policy's implementation and the
+    ///         sponsor permanent and locks the sales switch in its current position. Everything
+    ///         else the owner can do survives, including `setPriceOracle` and the name policy's
+    ///         setters.
     /// @dev    Refuses while sales are closed. Freezing then would shut the
     ///         payable path permanently — `setPublicSalesOpen` and the upgrade
     ///         escape are disabled by the same flag — and the ordering is

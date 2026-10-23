@@ -197,10 +197,10 @@ describe('bona fide community names', () => {
     })
 
     it('both setters revert for a contract bound to another controller or registrar', async () => {
-      const { controller, baseRegistrar } = await load()
+      const { controller, baseRegistrar, implementation } = await load()
       const boundElsewhere = await connection.viem.deployContract(
         'SimplexNamePolicy',
-        [mallory.address, mallory.address],
+        [implementation.address, mallory.address],
       )
       await expect(
         controller.write.setNamePolicy([boundElsewhere.address], {
@@ -274,11 +274,15 @@ describe('bona fide community names', () => {
     })
 
     it('a listed name cannot be accepted or registered before terms are set', async () => {
-      const { controller, baseRegistrar } = await load()
-      const unset = await connection.viem.deployContract('SimplexNamePolicy', [
-        controller.address,
-        baseRegistrar.address,
-      ])
+      const { controller, namePolicyImplementation } = await load()
+      const proxy = await connection.viem.deployContract(
+        'SimplexNamePolicyProxy',
+        [namePolicyImplementation.address, '0x'],
+      )
+      const unset = await connection.viem.getContractAt(
+        'SimplexNamePolicy',
+        proxy.address,
+      )
       await unset.write.addBonaFideNames([['community']], { account: guardian })
       await controller.write.setNamePolicy([unset.address], {
         account: owner,
