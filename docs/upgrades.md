@@ -1,11 +1,11 @@
 # SimplexController upgrade & storage-layout invariants
 
-`SimplexController` is the only **upgradeable** contract in the SNRC deployment
-(ERC-1967 UUPS proxy; `_authorizeUpgrade` is `onlyOwner`). A UUPS upgrade swaps
-the implementation behind a proxy whose storage persists — so the new
-implementation **must keep the exact storage layout** of the old one, only
-appending. Get this wrong and existing values (prices, reserved names, the
-sponsor, …) silently read from the wrong slots.
+`SimplexController` is upgradeable (ERC-1967 UUPS proxy; `_authorizeUpgrade`
+is `onlyOwner`), and so is `SimplexNamePolicy` (see the last section). A UUPS
+upgrade swaps the implementation behind a proxy whose storage persists — so the
+new implementation **must keep the exact storage layout** of the old one, only
+appending. Get this wrong and existing values (prices, the sponsor, …) silently
+read from the wrong slots.
 
 Upgradeability is not permanent. `freeze()` is one-way and makes
 `_authorizeUpgrade` revert `Frozen`, which is what fixes the implementation at
@@ -24,7 +24,7 @@ their own gaps — leave them alone. In practice they occupy roughly 250 slots, 
 this contract's own variables start well past slot 250. After them come
 `ens`, `base`, `minCommitmentAge`, `maxCommitmentAge`, two reserved slots
 (below), `prices`, `tldNode`, `tldSuffix`, `commitments`, `minCharLength`,
-`reservedNames`, `smpxNft` + `nftGateEnabled` + `_unusedPriceOracleFrozen`
+`_unusedReservedNames`, `smpxNft` + `nftGateEnabled` + `_unusedPriceOracleFrozen`
 (packed), `_reentrancyStatus`, then the names-v2 block:
 
 ```solidity
@@ -34,14 +34,14 @@ address public sponsor;
 address public defaultResolver;                    // packs with `publicSalesOpen`
 bool    public publicSalesOpen;
 mapping(address => bool) public wasDefaultResolver;
-address public bonaFideHook;
+address public namePolicy;
 
 uint256[43] private __gap;   // shrinks as state is added
 ```
 
 `__gap` was `[50]`; `[49]` when `priceOracleFrozen` landed, `[48]` with
 `_reentrancyStatus`, `[44]` with the four names-v2 slots, and `[43]` with
-`bonaFideHook`. It is the budget for future state.
+`namePolicy`. It is the budget for future state.
 
 `sponsor` reuses the slot of names-v2's `registrarAllowance`, which no deployed
 proxy has held; a mapping's own slot is never written, so it reads as zero under
@@ -55,6 +55,8 @@ either type. This is the one sanctioned exception to invariant 2.
   otherwise end registration and renewal forever.
 - `_unusedReverseRegistrar`, `_unusedDefaultReverseRegistrar` — were the two
   reverse-registrar references, kept when reverse resolution was removed.
+- `_unusedReservedNames` — was `reservedNames`, kept when the reserved-names
+  list moved to `SimplexNamePolicy`.
 
 Neither is written by anything. They exist so removing a feature does not shift
 every slot below it, and so the feature can be reintroduced by re-typing the slot
@@ -63,7 +65,8 @@ reserving its slot** — see invariant 2.
 
 ### `Reason` is storage
 
-`reservedNames` holds `Reason`, and an enum is stored as its member's position.
+`SimplexNamePolicy.reservedNames` holds `Reason`, and an enum is stored as its
+member's position.
 Once `.simplex` has reservations, reordering or removing a member relabels every
 name reserved under it, with nothing on chain to detect it. Treat the enum as
 append-only from then on, and keep `None` at 0 — `delete` writes zero.
@@ -122,3 +125,14 @@ Same slot count, same slot size. `__gap` is untouched.
       no upgrade path at all.
 - [ ] Bump the `__gap` size in the same commit as any new state variable, so the
       two never drift.
+
+## `SimplexNamePolicy`
+
+The name policy (reserved names, bona fide names and terms, acceptances) sits
+behind `SimplexNamePolicyProxy` (ERC-1967, UUPS). `_authorizeUpgrade` requires
+the controller's `owner()`, reverts `Frozen` once the controller is frozen, and
+reverts `ImplementationMismatch` unless the new implementation's immutable
+`controller()` and `registrar()` equal the current ones. Its own variables are
+`bonaFideNames`, `termsHash`, `acceptedTerms`, `acceptedClaimTerms`, `nonces`,
+`reservedNames`, then `uint256[44] __gap`; the invariants above apply to it
+unchanged.
