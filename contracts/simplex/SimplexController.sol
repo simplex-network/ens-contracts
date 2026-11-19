@@ -127,6 +127,7 @@ contract SimplexController is
     error OwnerMustBeCaller();
     error NotSponsor();
     error DisputeDaysOutOfRange(uint256 disputeDays);
+    error DisputePeriodNotOver(string name);
 
     event NameRegistered(
         string label,
@@ -592,6 +593,8 @@ contract SimplexController is
         uint256 horizon
     ) private returns (uint256 expires) {
         if (duration < MIN_RENEWAL_DURATION) revert DurationTooShort(duration);
+        if (block.timestamp < base.disputeUntil(uint256(labelhash)))
+            revert DisputePeriodNotOver(label);
         if (INamePolicy(namePolicy).isReserved(labelhash))
             revert NameReserved(label);
 
@@ -603,8 +606,8 @@ contract SimplexController is
 
     function unregister(string calldata label) external onlyOwnerOrBeneficiary {
         bytes32 labelhash = keccak256(bytes(label));
-        base.unregister(uint256(labelhash));
         _retireStaleRecords(keccak256(abi.encodePacked(tldNode, labelhash)));
+        base.unregister(uint256(labelhash));
     }
 
     /// @notice Pays the beneficiary, never `owner()`, so revenue is independent of

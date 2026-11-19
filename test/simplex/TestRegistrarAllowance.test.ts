@@ -6,6 +6,7 @@ import {
   AMPLE_ALLOWANCE,
   commitUnderGeneralTerms,
   deployNamesV2,
+  passDisputePeriod,
   registerWithCredit,
   registration,
   signRegistration,
@@ -260,6 +261,7 @@ describe('registrar allowance', () => {
       { account: guardian },
     )
     await sponsoredRegister(controller, registration('renewable', alice.address))
+    await passDisputePeriod(connection)
     const afterRegister = await sponsor.read.registrarAllowance([
       registrar.address,
     ])
@@ -309,6 +311,7 @@ describe('registrar allowance', () => {
       { account: guardian },
     )
     await sponsoredRegister(controller, registration('decade', alice.address))
+    await passDisputePeriod(connection)
     await sponsor.write.renewWithCredit(['decade', 9n * YEAR, zeroHash], {
       account: registrar,
     })
