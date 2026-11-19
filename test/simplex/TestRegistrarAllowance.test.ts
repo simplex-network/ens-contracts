@@ -6,6 +6,7 @@ import {
   AMPLE_ALLOWANCE,
   commitUnderGeneralTerms,
   deployNamesV2,
+  MIN_DISPUTE_DAYS,
   passDisputePeriod,
   registerWithCredit,
   registration,
@@ -15,6 +16,7 @@ import {
   YEAR_PRICE_USD,
   yearPriceUSD,
 } from './fixtures/namesV2.js'
+import { DAY } from '../fixtures/constants.js'
 
 const connection = await hre.network.connect()
 const publicClient = await connection.viem.getPublicClient()
@@ -312,7 +314,8 @@ describe('registrar allowance', () => {
     )
     await sponsoredRegister(controller, registration('decade', alice.address))
     await passDisputePeriod(connection)
-    await sponsor.write.renewWithCredit(['decade', 9n * YEAR, zeroHash], {
+    const longest = 9n * YEAR + MIN_DISPUTE_DAYS * DAY
+    await sponsor.write.renewWithCredit(['decade', longest, zeroHash], {
       account: registrar,
     })
     await expect(
