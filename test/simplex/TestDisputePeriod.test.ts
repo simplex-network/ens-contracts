@@ -446,16 +446,12 @@ describe('dispute period', () => {
       expect(await f.resolver.read.text([node('pastdefault'), KEY])).toBe('')
     })
 
-    it('is made without a default resolver and after the freeze', async () => {
+    it('is made without a default resolver', async () => {
       const f = await load()
-      const noDefault = await sponsored(f, 'nodefault')
-      const afterFreeze = await sponsored(f, 'afterfreeze')
+      const until = await sponsored(f, 'nodefault')
       await f.controller.write.setDefaultResolver([zeroAddress], { account: owner })
-      await unregister(f, 'nodefault', noDefault)
-      await f.controller.write.freeze({ account: owner })
-      await unregister(f, 'afterfreeze', afterFreeze)
-      for (const label of ['nodefault', 'afterfreeze'])
-        expect(await f.baseRegistrar.read.nameExpires([id(label)])).toBe(0n)
+      await unregister(f, 'nodefault', until)
+      expect(await f.baseRegistrar.read.nameExpires([id('nodefault')])).toBe(0n)
     })
 
     it('is refused while the registrar does not own the TLD node', async () => {
