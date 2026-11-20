@@ -1,9 +1,11 @@
 pragma solidity >=0.8.4;
 
 import "./ENS.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /// The ENS registry contract.
-contract ENSRegistry is ENS {
+contract ENSRegistry is ENS, Initializable {
     struct Record {
         address owner;
         address resolver;
@@ -12,6 +14,37 @@ contract ENSRegistry is ENS {
 
     mapping(bytes32 => Record) records;
     mapping(address => mapping(address => bool)) operators;
+
+    /// SNRC: signed operator approval. A user with no ETH cannot call
+    /// `setApprovalForAll`, and it is the one call the sponsored design cannot
+    /// relay any other way — the registry is the authority and has no other hook.
+    /// The state written is exactly what `setApprovalForAll` writes; the only new
+    /// capability is signing instead of paying gas.
+    bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
+        keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+    bytes32 private constant _EIP712_NAME = keccak256("SimplexENSRegistry");
+    bytes32 private constant _EIP712_VERSION = keccak256("1");
+    bytes32 public constant APPROVE_ALL_TYPEHASH =
+        keccak256(
+            "ApproveAll(address owner,address operator,bool approved,uint256 nonce,uint256 deadline)"
+        );
+
+    /// @dev One counter per approver, so a signature cannot be replayed and two
+    ///      approvals cannot be reordered.
+    mapping(address => uint256) public nonces;
+
+    /// SNRC: a node's new owner must be the caller or zero, except for the root
+    /// node and for subnodes of the root or of a TLD, which the root's owner and
+    /// the TLD's owner assign. `setSubnodeOwner` records a node as a TLD when
+    /// its parent is the root.
+    mapping(bytes32 => bool) public isTld;
+
+    error SignatureExpired();
+    error InvalidNonce();
+    error InvalidSignature();
+    error OwnerMustBeCaller();
 
     // Permits modifications only by the owner of the specified node.
     modifier authorised(bytes32 node) {
@@ -23,6 +56,11 @@ contract ENSRegistry is ENS {
     /// @dev Constructs a new ENS registry.
     constructor() public {
         records[0x0].owner = msg.sender;
+        _disableInitializers();
+    }
+
+    function initialize(address rootOwner) external initializer {
+        records[0x0].owner = rootOwner;
     }
 
     /// @dev Sets the record for a node.
@@ -64,6 +102,8 @@ contract ENSRegistry is ENS {
         bytes32 node,
         address owner
     ) public virtual override authorised(node) {
+        if (owner != msg.sender && owner != address(0) && node != bytes32(0))
+            revert OwnerMustBeCaller();
         _setOwner(node, owner);
         emit Transfer(node, owner);
     }
@@ -78,6 +118,9 @@ contract ENSRegistry is ENS {
         address owner
     ) public virtual override authorised(node) returns (bytes32) {
         bytes32 subnode = keccak256(abi.encodePacked(node, label));
+        if (node == bytes32(0)) isTld[subnode] = true;
+        else if (owner != msg.sender && owner != address(0) && !isTld[node])
+            revert OwnerMustBeCaller();
         _setOwner(subnode, owner);
         emit NewOwner(node, label, owner);
         return subnode;
@@ -115,6 +158,63 @@ contract ENSRegistry is ENS {
     ) external virtual override {
         operators[msg.sender][operator] = approved;
         emit ApprovalForAll(msg.sender, operator, approved);
+    }
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    _EIP712_DOMAIN_TYPEHASH,
+                    _EIP712_NAME,
+                    _EIP712_VERSION,
+                    block.chainid,
+                    address(this)
+                )
+            );
+    }
+
+    /// @dev `setApprovalForAll` on behalf of `approvalOwner`, who signed rather
+    ///      than paid. The caller supplies gas and nothing else: it cannot choose
+    ///      the operator, cannot replay, and cannot act after the deadline.
+    /// @param approvalOwner The address granting or revoking the approval.
+    /// @param operator Address to add to or remove from the set of operators.
+    /// @param approved True to approve, false to revoke.
+    /// @param nonce Must equal `nonces(approvalOwner)`.
+    /// @param deadline Unix time after which the signature is refused.
+    /// @param sig EIP-712 signature over `APPROVE_ALL_TYPEHASH`.
+    function setApprovalForAllWithSig(
+        address approvalOwner,
+        address operator,
+        bool approved,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata sig
+    ) external virtual {
+        if (block.timestamp > deadline) revert SignatureExpired();
+        if (nonce != nonces[approvalOwner]) revert InvalidNonce();
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR(),
+                keccak256(
+                    abi.encode(
+                        APPROVE_ALL_TYPEHASH,
+                        approvalOwner,
+                        operator,
+                        approved,
+                        nonce,
+                        deadline
+                    )
+                )
+            )
+        );
+        if (!SignatureChecker.isValidSignatureNow(approvalOwner, digest, sig))
+            revert InvalidSignature();
+        unchecked {
+            nonces[approvalOwner] = nonce + 1;
+        }
+        operators[approvalOwner][operator] = approved;
+        emit ApprovalForAll(approvalOwner, operator, approved);
     }
 
     /// @dev Returns the address that owns the specified node.

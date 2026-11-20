@@ -3,19 +3,20 @@ pragma solidity ^0.8.17;
 
 import {AbstractUniversalResolver, IGatewayProvider} from "./AbstractUniversalResolver.sol";
 import {RegistryUtils, ENS} from "./RegistryUtils.sol";
-import {ReverseClaimer} from "../reverseRegistrar/ReverseClaimer.sol";
 
-contract UniversalResolver is AbstractUniversalResolver, ReverseClaimer {
+contract UniversalResolver is AbstractUniversalResolver {
     ENS public immutable registry;
 
+    /// @dev The first parameter is unnamed on purpose. Upstream passed it to
+    ///      `ReverseClaimer`, which claimed a reverse node for it; SNRC runs no
+    ///      reverse registrar, so the claim had nothing to call and the
+    ///      inheritance is gone. The parameter is kept so the constructor ABI
+    ///      still matches upstream and the deployment scripts.
     constructor(
-        address owner,
+        address /* owner */,
         ENS ens,
         IGatewayProvider batchGatewayProvider
-    )
-        AbstractUniversalResolver(batchGatewayProvider)
-        ReverseClaimer(ens, owner)
-    {
+    ) AbstractUniversalResolver(batchGatewayProvider) {
         registry = ens;
     }
 
