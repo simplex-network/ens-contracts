@@ -437,7 +437,7 @@ describe('claimUnderTerms', () => {
     )
   })
 
-  it("with the registrar's policy pointer at the policy implementation the claim reverts NotProxy, and at a policy without recordClaimTerms or at zero it reverts while transferFrom moves the name", async () => {
+  it("with the registrar's policy pointer at the policy implementation the claim reverts NotProxy, at a policy without recordClaimTerms or at zero it reverts, and transferFrom moves the name through that policy", async () => {
     const f = await load()
     const label = GENERAL.label
     const offer = await offerToBob(f, label)
