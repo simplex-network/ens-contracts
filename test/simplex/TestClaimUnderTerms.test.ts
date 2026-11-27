@@ -404,7 +404,7 @@ describe('claimUnderTerms', () => {
     expect(await f.baseRegistrar.read.disputeUntil([id(label)])).toBe(until)
   })
 
-  it('a holder and a recipient that re-enter claimUnderTerms from any call into them both claim', async () => {
+  it('the claim calls no code of the holder or the recipient', async () => {
     const f = await load()
     const label = GENERAL.label
     const holder = await connection.viem.deployContract('ReentrantClaimer', [
