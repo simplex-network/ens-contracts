@@ -398,6 +398,17 @@ contract SimplexNamePolicy is INamePolicy {
         _acceptForClaim(tokenId, from, offer, acceptedTermsHash, communityTermsHash, recipient);
     }
 
+    function acceptTermsForClaim(
+        uint256 tokenId,
+        address from,
+        uint256 offer,
+        bytes32 acceptedTermsHash,
+        address recipient
+    ) external {
+        if (msg.sender != address(registrar)) revert NotRegistrar();
+        acceptedClaimTerms[tokenId][from][recipient][offer] = acceptedTermsHash;
+    }
+
     function acceptGeneralTermsForRenewal(
         uint256 tokenId,
         uint256 expires,

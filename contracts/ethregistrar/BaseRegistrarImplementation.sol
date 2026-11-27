@@ -567,6 +567,25 @@ contract BaseRegistrarImplementation is
         _transfer(from, to, tokenId);
     }
 
+    function claimUnderTerms(
+        address from,
+        uint256 tokenId,
+        uint256 offer,
+        bytes32 acceptedTermsHash
+    ) external {
+        if (ownerOf(tokenId) != from) revert NotNameOwner();
+        if (getApproved(tokenId) != msg.sender || offer != offers[tokenId])
+            revert NotOffered();
+        INamePolicy(namePolicy).acceptTermsForClaim(
+            tokenId,
+            from,
+            offer,
+            acceptedTermsHash,
+            msg.sender
+        );
+        _transfer(from, msg.sender, tokenId);
+    }
+
     /// @dev Auto-reclaim: an NFT transfer re-points the 2LD's ENS registry node
     ///      to the new holder, so the registry "manager" always tracks the token
     ///      — no separate reclaim, and the previous owner can no longer manage

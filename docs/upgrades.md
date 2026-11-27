@@ -231,7 +231,7 @@ declaration order, so reordering them swaps the two lists; keep them unchanged
 | `SimplexResolver` | `SimplexNamePolicy` | `clearRecords` |
 | `SimplexResolver` | `UniversalResolver` | `supportsInterface` and the resolver functions requested through it |
 | `SimplexNamePolicy` | `SimplexController` | `controller`, `isReserved`, `communityNames`, `consumeRegistration` |
-| `SimplexNamePolicy` | `BaseRegistrarImplementation` | `registrar`, `consumeTransfer` |
+| `SimplexNamePolicy` | `BaseRegistrarImplementation` | `registrar`, `acceptTermsForClaim`, `consumeTransfer` |
 
 `SimplexSponsor` and `UniversalResolver` are called only from outside the
 stack. `registerSponsored` and `renewSponsored` of `SimplexController` revert
