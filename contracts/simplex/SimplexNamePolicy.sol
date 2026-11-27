@@ -398,7 +398,7 @@ contract SimplexNamePolicy is INamePolicy {
         _acceptForClaim(tokenId, from, offer, acceptedTermsHash, communityTermsHash, recipient);
     }
 
-    function acceptTermsForClaim(
+    function recordClaimTerms(
         uint256 tokenId,
         address from,
         uint256 offer,

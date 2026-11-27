@@ -13,7 +13,7 @@ interface INamePolicy {
 
     function communityNames(bytes32 labelhash) external view returns (bool);
 
-    function acceptTermsForClaim(
+    function recordClaimTerms(
         uint256 tokenId,
         address from,
         uint256 offer,

@@ -335,7 +335,7 @@ describe('claimUnderTerms', () => {
     })
   })
 
-  it('a claim naming another holder reverts NotNameOwner, and only the registrar records an acceptance for a claim', async () => {
+  it('a claim naming another holder reverts NotNameOwner, and only the registrar records claim terms', async () => {
     const f = await load()
     const label = GENERAL.label
     const offer = await offerToBob(f, label)
@@ -344,7 +344,7 @@ describe('claimUnderTerms', () => {
     ).toBeRevertedWithCustomError('NotNameOwner')
     for (const account of [alice, bob]) {
       await expect(
-        f.namePolicy.write.acceptTermsForClaim(
+        f.namePolicy.write.recordClaimTerms(
           [id(label), alice.address, offer, GENERAL_TERMS, bob.address],
           { account },
         ),

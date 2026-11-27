@@ -576,7 +576,7 @@ contract BaseRegistrarImplementation is
         if (ownerOf(tokenId) != from) revert NotNameOwner();
         if (getApproved(tokenId) != msg.sender || offer != offers[tokenId])
             revert NotOffered();
-        INamePolicy(namePolicy).acceptTermsForClaim(
+        INamePolicy(namePolicy).recordClaimTerms(
             tokenId,
             from,
             offer,
