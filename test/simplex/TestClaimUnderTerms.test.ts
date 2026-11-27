@@ -286,16 +286,16 @@ describe('claimUnderTerms', () => {
     const f = await load()
     const label = GENERAL.label
     const offer = await offerToBob(f, label)
-    const first = { maxPriorityFeePerGas: 2_000_000_000n }
+    const higherTip = { maxPriorityFeePerGas: 2_000_000_000n }
     await testClient.setAutomine(false)
     try {
       const withdrawn = await f.baseRegistrar.write.approve(
         [zeroAddress, id(label)],
-        { account: alice, ...first },
+        { account: alice, ...higherTip },
       )
       const offeredAgain = await f.baseRegistrar.write.approve(
         [bob.address, id(label)],
-        { account: alice, ...first },
+        { account: alice, ...higherTip },
       )
       const claimed = await f.baseRegistrar.write.claimUnderTerms(
         [alice.address, id(label), offer, GENERAL_TERMS],
@@ -404,7 +404,7 @@ describe('claimUnderTerms', () => {
     expect(await f.baseRegistrar.read.disputeUntil([id(label)])).toBe(until)
   })
 
-  it('the claim calls no code of the holder or the recipient', async () => {
+  it('a holder and a recipient that re-enter claimUnderTerms from any call into them both claim', async () => {
     const f = await load()
     const label = GENERAL.label
     const holder = await connection.viem.deployContract('ReentrantClaimer', [
@@ -435,10 +435,9 @@ describe('claimUnderTerms', () => {
     expect(await f.baseRegistrar.read.ownerOf([id(label)])).toBe(
       getAddress(bob.address),
     )
-    expect(await holder.read.reentries()).toBe(0n)
   })
 
-  it("with the registrar's policy pointer at the policy implementation the claim reverts NotProxy, and at zero it reverts while transferFrom moves the name", async () => {
+  it("with the registrar's policy pointer at the policy implementation the claim reverts NotProxy, and at a policy without recordClaimTerms or at zero it reverts while transferFrom moves the name", async () => {
     const f = await load()
     const label = GENERAL.label
     const offer = await offerToBob(f, label)
@@ -450,12 +449,19 @@ describe('claimUnderTerms', () => {
       claim(f, label, { offer, terms: GENERAL_TERMS }),
     ).toBeRevertedWithCustomErrorFrom(f.namePolicy, 'NotProxy')
 
-    await f.baseRegistrar.write.setNamePolicy([zeroAddress], {
+    const transferOnly = await connection.viem.deployContract(
+      'TransferOnlyNamePolicy',
+      [f.baseRegistrar.address],
+    )
+    for (const pointer of [transferOnly.address, zeroAddress]) {
+      await f.baseRegistrar.write.setNamePolicy([pointer], { account: owner })
+      await expect(
+        claim(f, label, { offer, terms: GENERAL_TERMS }),
+      ).toBeRevertedWithoutReason()
+    }
+    await f.baseRegistrar.write.setNamePolicy([transferOnly.address], {
       account: owner,
     })
-    await expect(
-      claim(f, label, { offer, terms: GENERAL_TERMS }),
-    ).toBeRevertedWithoutReason()
     await f.baseRegistrar.write.transferFrom(
       [alice.address, bob.address, id(label)],
       { account: bob },

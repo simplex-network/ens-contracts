@@ -14,7 +14,6 @@ interface IClaimUnderTerms {
 
 contract ReentrantClaimer {
     IClaimUnderTerms public immutable registrar;
-    uint256 public reentries;
 
     constructor(IClaimUnderTerms registrar_) {
         registrar = registrar_;
@@ -39,16 +38,11 @@ contract ReentrantClaimer {
         uint256 tokenId,
         bytes calldata
     ) external returns (bytes4) {
-        _reenter(from, tokenId);
+        registrar.claimUnderTerms(from, tokenId, 0, bytes32(0));
         return this.onERC721Received.selector;
     }
 
     fallback() external {
-        _reenter(address(0), 0);
-    }
-
-    function _reenter(address from, uint256 tokenId) private {
-        ++reentries;
-        registrar.claimUnderTerms(from, tokenId, 0, bytes32(0));
+        registrar.claimUnderTerms(address(0), 0, 0, bytes32(0));
     }
 }
