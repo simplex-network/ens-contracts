@@ -2,7 +2,7 @@ name: SimpleX tests
 
 on:
   push:
-    branches: [simplex, ab/one-step-claim]
+    branches: [simplex]
   pull_request:
     branches: [simplex]
 
